@@ -9,7 +9,7 @@ class File(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     original_filename = Column(String, nullable=False)  # Оригинальное имя файла
     filename = Column(String, nullable=False)  # Уникальное имя файла на диске
-    pages = Column(Integer, nullable=True)
+    pages = Column(Integer, default=0)  # Количество страниц
     filepath = Column(String, nullable=False)
     size = Column(Integer, nullable=False)
     uploaded_at = Column(DateTime, nullable=False)

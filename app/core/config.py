@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     ALGORITHM: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int
     PRICE_PER_PAGE: int
+    PRINTER_NAME: str
 
     class Config:
         from_attributes = True

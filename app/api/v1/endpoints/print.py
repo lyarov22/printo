@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 from datetime import datetime
 from app.db.session import get_db
+from app.core.config import settings
 from app.core.security import decode_access_token
 import subprocess
 from pathlib import Path
@@ -10,7 +11,7 @@ import os
 
 router = APIRouter()
 
-PDF_PRINTER_NAME = "PDF"  # Имя виртуального принтера PDF
+PDF_PRINTER_NAME = settings.PRINTER_NAME
 
 @router.post("/print/{order_id}")
 async def send_to_virtual_printer(

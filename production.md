@@ -10,10 +10,6 @@
    ```bash
    sudo apt install cups libcups2-dev
 
-2.1 **Install dev deps**
-    ```bash
-    sudo apt install cups-pdf
-
 3. **Install dependencies**:
    ```bash
    pip install -r requirements.txt

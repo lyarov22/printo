@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     PRICE_PER_PAGE: int
 
     class Config:
+        from_attributes = True
         env_file = ".env"
 
 settings = Settings()

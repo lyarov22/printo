@@ -1,34 +1,32 @@
 import re
+import subprocess
 import tempfile
 from PyPDF2 import PdfReader
-from fastapi import APIRouter, Depends, UploadFile, HTTPException, status
+from fastapi import APIRouter, Depends, UploadFile, HTTPException, status, File as FastAPIFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
+from app.db.models.file import File
 from app.db.session import get_db
-from fastapi import File, UploadFile
-from app.schemas.file import FileUploadResponse, FileRead
+from app.schemas.file import FileUploadResponse
 from app.core.security import decode_access_token
 import os
 from pathlib import Path
 from datetime import datetime
-from docx2pdf import convert
 
 router = APIRouter()
 UPLOAD_DIR = Path("./uploads")  # Директория для хранения файлов
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 MAX_USER_STORAGE_MB = 100
-ALLOWED_EXTENSIONS = {".docx", ".doc", ".pdf", ".png", ".jpg"}
+ALLOWED_EXTENSIONS = {".docx", ".doc", ".pdf"}
 MAX_FILE_SIZE_MB = 10  # Максимальный размер файла в мегабайтах
-
 
 def sanitize_filename(filename: str) -> str:
     """
     Убираем недопустимые символы из имени файла.
     """
     return re.sub(r'[<>:"/\\|?*]', '_', filename)
-
 
 def format_size(size_in_bytes):
     """Преобразует размер из байт в килобайты или мегабайты."""
@@ -37,93 +35,103 @@ def format_size(size_in_bytes):
     else:
         return f"{round(size_in_bytes / 1024, 2)} KB"
 
+def convert_to_pdf_and_count_pages(input_file: str, output_dir: str) -> tuple[str, int | None]:
+    """Конвертирует файл в PDF с помощью LibreOffice и подсчитывает количество страниц."""
+    try:
+        input_path = Path(input_file)
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
 
-def calculate_pages(file_path: str, ext: str) -> int:
-    """Подсчёт страниц в файле."""
-    if ext == ".pdf":
-        reader = PdfReader(file_path)
-        return len(reader.pages)
-    elif ext == ".docx":
-        pdf_path = file_path + ".pdf"
-        convert(file_path, pdf_path)  # Конвертируем DOCX в PDF
-        reader = PdfReader(pdf_path)
-        pages = len(reader.pages)
-        os.remove(pdf_path)  # Удаляем временный PDF
-        return pages
-    else:
-        raise ValueError("Unsupported file format")
+        # Если файл уже PDF, возвращаем его путь и подсчитываем страницы
+        if input_path.suffix.lower() == ".pdf":
+            pdf_file = input_file
+        else:
+            subprocess.run(
+                [
+                    "libreoffice",
+                    "--headless",
+                    "--convert-to",
+                    "pdf",
+                    input_file,
+                    "--outdir",
+                    str(output_path)
+                ],
+                check=True
+            )
+            pdf_file = str(output_path / f"{input_path.stem}.pdf")
 
+        # Подсчёт страниц с помощью pdfinfo
+        page_info = subprocess.check_output(["pdfinfo", pdf_file]).decode()
+        pages = int([line.split(":")[1].strip() for line in page_info.splitlines() if "Pages" in line][0])
+
+        return pdf_file if input_path.suffix.lower() != ".pdf" else None, pages
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to convert {input_file} to PDF: {e}")
+    except Exception as e:
+        raise RuntimeError(f"Error counting pages: {e}")
 
 @router.post("/upload", response_model=FileUploadResponse)
 async def upload_file(
-    file: UploadFile = File(...),
+    file: UploadFile = FastAPIFile(...),
     token: str = Depends(decode_access_token),
     db: AsyncSession = Depends(get_db)
 ):
-    # Проверяем пользователя
     user_email = token.get("sub")
     if not user_email:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    # Находим user_id по email
     user_query = await db.execute(text("SELECT id FROM users WHERE email = :email"), {"email": user_email})
     user_id = user_query.scalar_one_or_none()
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Проверяем допустимое расширение файла
     _, ext = os.path.splitext(file.filename)
     ext = ext.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Unsupported file format")
 
-    # Создаём временный файл для обработки
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
 
-    try:
-        pages_count = calculate_pages(tmp_path, ext)  # Подсчёт страниц
-    except ValueError:
-        os.remove(tmp_path)
-        raise HTTPException(status_code=400, detail="Error processing file")
-
-    # Проверяем хранилище пользователя
     query = text("SELECT COALESCE(SUM(size), 0) FROM files WHERE user_id = :user_id")
     user_files = await db.execute(query, {"user_id": user_id})
     total_size = user_files.scalar_one_or_none() or 0
 
-    file_size = len(await file.read())  # Получаем размер загружаемого файла
-    await file.seek(0)  # Возвращаем указатель на начало файла
+    file_size = os.path.getsize(tmp_path)
 
     if (total_size + file_size) > MAX_USER_STORAGE_MB * 1024 * 1024:
         os.remove(tmp_path)
         raise HTTPException(status_code=400, detail="Storage limit exceeded")
 
-    # Создаём уникальную директорию для пользователя
     user_upload_dir = UPLOAD_DIR / sanitize_filename(user_email)
     user_upload_dir.mkdir(exist_ok=True)
 
-    # Генерируем безопасное имя файла
     timestamp = datetime.utcnow().isoformat().replace(":", "-")
     safe_filename = sanitize_filename(file.filename)
     filename = f"{timestamp}_{safe_filename}"
     filepath = user_upload_dir / filename
 
-    # Сохраняем файл
     os.rename(tmp_path, filepath)
 
-    # Добавляем запись в базу данных
+    # Конвертируем в PDF и подсчитываем страницы
+    try:
+        temp_pdf_path, pages_count = convert_to_pdf_and_count_pages(str(filepath), str(user_upload_dir))
+    except Exception as e:
+        os.remove(filepath)
+        raise HTTPException(status_code=500, detail=str(e))
+
     new_file = File(
         user_id=user_id,
         original_filename=file.filename,
         filename=safe_filename,
         filepath=str(filepath),
+        temp_pdf_path=temp_pdf_path,
         size=file_size,
         uploaded_at=datetime.utcnow(),
-        pages_count=pages_count  # Добавляем количество страниц
+        pages_count=pages_count
     )
     db.add(new_file)
     await db.commit()
@@ -141,13 +149,11 @@ async def list_files(
     token: str = Depends(decode_access_token),
     db: AsyncSession = Depends(get_db)
 ):
-    # Проверяем пользователя
     user_email = token.get("sub")
     if not user_email:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    # Получаем user_id по user_email
     query_user_id = text("SELECT id FROM users WHERE email = :email")
     result_user_id = await db.execute(query_user_id, {"email": user_email})
     user_id = result_user_id.scalar_one_or_none()
@@ -156,18 +162,16 @@ async def list_files(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Получаем файлы пользователя
     query_files = text("SELECT * FROM files WHERE user_id = :user_id")
     result_files = await db.execute(query_files, {"user_id": user_id})
     files = [
         {
             **dict(row),
-            "size": format_size(row["size"])  # Форматируем размер
+            "size": format_size(row["size"])
         }
         for row in result_files.mappings()
     ]
 
-    # Считаем оставшееся место
     query_storage = text(
         "SELECT COALESCE(SUM(size), 0) FROM files WHERE user_id = :user_id")
     result_storage = await db.execute(query_storage, {"user_id": user_id})
@@ -176,10 +180,9 @@ async def list_files(
         (MAX_USER_STORAGE_MB * 1024 * 1024 - used_storage) / (1024 * 1024), 2)
 
     return {
-        "files": files,  # Теперь размер файлов форматирован
+        "files": files,
         "remaining_storage_mb": remaining_storage_mb
     }
-
 
 @router.delete("/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_file(
@@ -193,7 +196,6 @@ async def delete_file(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
 
-    # Получаем user_id по user_email
     query_user_id = text("SELECT id FROM users WHERE email = :email")
     result_user_id = await db.execute(query_user_id, {"email": user_email})
     user_id = result_user_id.scalar_one_or_none()
@@ -203,7 +205,6 @@ async def delete_file(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
-    # Проверяем существование файла
     query = text(
         "SELECT * FROM files WHERE id = :file_id AND user_id = :user_id")
     result = await db.execute(query, {"file_id": file_id, "user_id": user_id})
@@ -212,25 +213,21 @@ async def delete_file(
     if not file:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"File with ID {
-                file_id} not found or does not belong to the user"
+            detail=f"File with ID {file_id} not found or does not belong to the user"
         )
 
-    # Удаляем файл с диска, если он существует
     filepath = Path(file.filepath)
     if filepath.exists():
-        filepath.unlink()  # Удаляем файл с диска
+        filepath.unlink()
     else:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"File with ID {file_id} not found on the disk"
         )
 
-    # Удаляем запись из базы данных
     delete_query = text("DELETE FROM files WHERE id = :file_id")
     await db.execute(delete_query, {"file_id": file_id})
     await db.commit()
-
 
 @router.patch("/files/{file_id}", status_code=status.HTTP_200_OK)
 async def rename_file(
@@ -245,7 +242,6 @@ async def rename_file(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
 
-    # Получаем user_id по user_email
     query_user_id = text("SELECT id FROM users WHERE email = :email")
     result_user_id = await db.execute(query_user_id, {"email": user_email})
     user_id = result_user_id.scalar_one_or_none()
@@ -255,7 +251,6 @@ async def rename_file(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
-    # Проверяем существование файла
     query = text("SELECT * FROM files WHERE id = :file_id AND user_id = :user_id")
     result = await db.execute(query, {"file_id": file_id, "user_id": user_id})
     file = result.fetchone()
@@ -266,7 +261,6 @@ async def rename_file(
             detail=f"File with ID {file_id} not found or does not belong to the user"
         )
 
-    # Обновляем имя файла
     new_filename = f"{new_name}{Path(file.filename).suffix}"
     update_query = text("UPDATE files SET filename = :new_filename WHERE id = :file_id")
     await db.execute(update_query, {"new_filename": new_filename, "file_id": file_id})
@@ -286,7 +280,6 @@ async def download_file(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
 
-    # Получаем user_id по user_email
     query_user_id = text("SELECT id FROM users WHERE email = :email")
     result_user_id = await db.execute(query_user_id, {"email": user_email})
     user_id = result_user_id.scalar_one_or_none()
@@ -296,7 +289,6 @@ async def download_file(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
-    # Проверяем существование файла
     query = text("SELECT * FROM files WHERE id = :file_id AND user_id = :user_id")
     result = await db.execute(query, {"file_id": file_id, "user_id": user_id})
     file = result.fetchone()

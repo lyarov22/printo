@@ -8,7 +8,6 @@ from app.core.security import decode_access_token
 from app.core.config import settings  # Предположим, что конфиг загружается из settings
 from typing import List
 from PyPDF2 import PdfReader
-from docx import Document
 from pathlib import Path
 
 router = APIRouter()

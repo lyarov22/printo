@@ -22,14 +22,14 @@
    - In the root directory, create a file named `.env`.
    - Add the following content and replace values as necessary:
      ```env
-     PROJECT_NAME=MyApp
-     API_V1_STR=/api/v1
-     DATABASE_URL=postgresql+asyncpg://printo:printo@localhost/printo
-     SECRET_KEY=supersecretkey
-     ALGORITHM=HS256
-     ACCESS_TOKEN_EXPIRE_MINUTES=30
-     PRICE_PER_PAGE=40
-     PRINTER_NAME=PDF
+      PROJECT_NAME=MyApp
+      API_V1_STR=/api/v1
+      DATABASE_URL=postgresql+asyncpg://printo:printo@db:5432/printo
+      SECRET_KEY=supersecretkey
+      ALGORITHM=HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES=10080 #1 week
+      PRICE_PER_PAGE=40
+      PRINTER_NAME=PDF
      ```
 
 5. **Run the server:**:

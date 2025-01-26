@@ -1,47 +1,34 @@
-from fastapi import FastAPI, File, UploadFile
-import os
-import tempfile
-from PyPDF2 import PdfReader
-from docx2pdf import convert
+from fastapi import FastAPI
+from fastapi_utils.tasks import repeat_every
+from app.core.config import settings
+from app.api.v1.endpoints.auth import router as auth_router
+from app.api.v1.endpoints.file import router as file_router
+from app.api.v1.endpoints.order import router as order_router
+from app.db.session import engine, Base, get_db
+from app.tasks.cleanup import cleanup_old_files
+import logging
 
-app = FastAPI()
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-@app.post("/print")
-async def print_file(file: UploadFile = File(...)):
-    # Сохраняем загружаемый файл во временной папке
-    _, ext = os.path.splitext(file.filename)
-    ext = ext.lower()
+app = FastAPI(title=settings.PROJECT_NAME)
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(await file.read())
-        tmp_path = tmp.name
+# Register routers
+app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
+app.include_router(file_router, prefix=f"{settings.API_V1_STR}/files", tags=["files"])
+app.include_router(order_router, prefix=f"{settings.API_V1_STR}/orders", tags=["orders"])
 
-    pages_count = 0
+@app.on_event("startup")
+async def startup():
+    # Создаем таблицы в базе данных
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Startup event completed. Database tables created.")
 
-    if ext == ".pdf":
-        # Определяем кол-во страниц в PDF
-        reader = PdfReader(tmp_path)
-        pages_count = len(reader.pages)
-
-    elif ext == ".docx":
-        # Сначала конвертируем DOCX -> PDF
-        pdf_path = tmp_path + ".pdf"
-        convert(tmp_path, pdf_path)
-        reader = PdfReader(pdf_path)
-        pages_count = len(reader.pages)
-        os.remove(pdf_path)  # Удаляем временный PDF
-
-    else:
-        os.remove(tmp_path)
-        return {"error": "Неподдерживаемый формат файла"}
-
-    # Эмулируем отправку на печать
-    # Здесь можно добавить логику отправки реальному принтеру,
-    # но пока просто выводим информацию:
-    print(f"Файл: {file.filename}. Количество страниц: {pages_count}")
-    print("Эмулируем печать...")
-
-    # Удаляем временный файл
-    os.remove(tmp_path)
-
-    return {"file": file.filename, "pages": pages_count, "status": "Файл отправлен на печать (эмуляция)"}
+# Отдельная регистрация повторяющейся задачи
+@app.on_event("startup")
+@repeat_every(seconds=3600)  # Выполняем раз в час
+async def schedule_cleanup():
+    async for db in get_db():  # Используем get_db как генератор
+        await cleanup_old_files(db)

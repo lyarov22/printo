@@ -1,15 +1,18 @@
 import re
+import tempfile
+from PyPDF2 import PdfReader
 from fastapi import APIRouter, Depends, UploadFile, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 from app.db.session import get_db
-from app.db.models.file import File
+from fastapi import File, UploadFile
 from app.schemas.file import FileUploadResponse, FileRead
 from app.core.security import decode_access_token
 import os
 from pathlib import Path
 from datetime import datetime
+from docx2pdf import convert
 
 router = APIRouter()
 UPLOAD_DIR = Path("./uploads")  # Директория для хранения файлов
@@ -35,9 +38,25 @@ def format_size(size_in_bytes):
         return f"{round(size_in_bytes / 1024, 2)} KB"
 
 
+def calculate_pages(file_path: str, ext: str) -> int:
+    """Подсчёт страниц в файле."""
+    if ext == ".pdf":
+        reader = PdfReader(file_path)
+        return len(reader.pages)
+    elif ext == ".docx":
+        pdf_path = file_path + ".pdf"
+        convert(file_path, pdf_path)  # Конвертируем DOCX в PDF
+        reader = PdfReader(pdf_path)
+        pages = len(reader.pages)
+        os.remove(pdf_path)  # Удаляем временный PDF
+        return pages
+    else:
+        raise ValueError("Unsupported file format")
+
+
 @router.post("/upload", response_model=FileUploadResponse)
 async def upload_file(
-    file: UploadFile,
+    file: UploadFile = File(...),
     token: str = Depends(decode_access_token),
     db: AsyncSession = Depends(get_db)
 ):
@@ -54,13 +73,25 @@ async def upload_file(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Создаем уникальную директорию для пользователя
-    user_upload_dir = UPLOAD_DIR / sanitize_filename(user_email)
-    user_upload_dir.mkdir(exist_ok=True)
+    # Проверяем допустимое расширение файла
+    _, ext = os.path.splitext(file.filename)
+    ext = ext.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported file format")
 
-    # Проверяем объем данных, хранящихся пользователем
-    query = text(
-        "SELECT COALESCE(SUM(size), 0) FROM files WHERE user_id = :user_id")
+    # Создаём временный файл для обработки
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        pages_count = calculate_pages(tmp_path, ext)  # Подсчёт страниц
+    except ValueError:
+        os.remove(tmp_path)
+        raise HTTPException(status_code=400, detail="Error processing file")
+
+    # Проверяем хранилище пользователя
+    query = text("SELECT COALESCE(SUM(size), 0) FROM files WHERE user_id = :user_id")
     user_files = await db.execute(query, {"user_id": user_id})
     total_size = user_files.scalar_one_or_none() or 0
 
@@ -68,33 +99,42 @@ async def upload_file(
     await file.seek(0)  # Возвращаем указатель на начало файла
 
     if (total_size + file_size) > MAX_USER_STORAGE_MB * 1024 * 1024:
+        os.remove(tmp_path)
         raise HTTPException(status_code=400, detail="Storage limit exceeded")
 
+    # Создаём уникальную директорию для пользователя
+    user_upload_dir = UPLOAD_DIR / sanitize_filename(user_email)
+    user_upload_dir.mkdir(exist_ok=True)
+
     # Генерируем безопасное имя файла
-    timestamp = datetime.utcnow().isoformat().replace(":", "-")  # Заменяем `:` на `-`
+    timestamp = datetime.utcnow().isoformat().replace(":", "-")
     safe_filename = sanitize_filename(file.filename)
     filename = f"{timestamp}_{safe_filename}"
     filepath = user_upload_dir / filename
 
     # Сохраняем файл
-    with open(filepath, "wb") as f:
-        f.write(await file.read())
+    os.rename(tmp_path, filepath)
 
-    # Добавляем запись в БД
+    # Добавляем запись в базу данных
     new_file = File(
         user_id=user_id,
-        original_filename=file.filename,  # Исходное имя файла
-        filename=safe_filename,          # Сгенерированное имя файла
-        filepath=str(filepath),          # Путь к файлу
-        size=file_size,                  # Размер файла
-        uploaded_at=datetime.utcnow(),   # Время загрузки
+        original_filename=file.filename,
+        filename=safe_filename,
+        filepath=str(filepath),
+        size=file_size,
+        uploaded_at=datetime.utcnow(),
+        pages_count=pages_count  # Добавляем количество страниц
     )
     db.add(new_file)
     await db.commit()
     await db.refresh(new_file)
 
-    return FileUploadResponse(id=new_file.id, filename=new_file.filename, size=file_size)
-
+    return FileUploadResponse(
+        id=new_file.id,
+        filename=new_file.filename,
+        size=file_size,
+        pages=pages_count
+    )
 
 @router.get("/files", response_model=dict)
 async def list_files(

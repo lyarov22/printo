@@ -4,6 +4,8 @@ from app.core.config import settings
 from app.api.v1.endpoints.auth import router as auth_router
 from app.api.v1.endpoints.file import router as file_router
 from app.api.v1.endpoints.order import router as order_router
+from app.api.v1.endpoints.payment import router as payment_router
+from app.api.v1.endpoints.print import router as print_router
 from app.db.session import engine, Base, get_db
 from app.tasks.cleanup import cleanup_old_files
 import logging
@@ -18,6 +20,8 @@ app = FastAPI(title=settings.PROJECT_NAME)
 app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
 app.include_router(file_router, prefix=f"{settings.API_V1_STR}/files", tags=["files"])
 app.include_router(order_router, prefix=f"{settings.API_V1_STR}/orders", tags=["orders"])
+app.include_router(payment_router, prefix=f"{settings.API_V1_STR}", tags=["payments"])
+app.include_router(print_router, prefix=f"{settings.API_V1_STR}", tags=["print"])
 
 @app.on_event("startup")
 async def startup():

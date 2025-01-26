@@ -7,8 +7,9 @@ class Order(Base):
     __tablename__ = "orders"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # Исправлено
-    created_at = Column(DateTime, default=datetime.utcnow)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)  # Время создания
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)  # Время обновления
     status = Column(String, default="pending")  # Статусы: pending, completed, failed
     total_price = Column(Integer, nullable=False)
     duplex = Column(Boolean, default=False)  # Двухсторонняя печать

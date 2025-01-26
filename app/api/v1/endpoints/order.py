@@ -35,7 +35,7 @@ async def create_order(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     # Проверяем, что файлы принадлежат пользователю
-    query = text("SELECT id, pages FROM files WHERE id = ANY(:file_ids) AND user_id = :user_id")
+    query = text("SELECT id, pages_count FROM files WHERE id = ANY(:file_ids) AND user_id = :user_id")
     result = await db.execute(query, {"file_ids": file_ids, "user_id": user_id})
     user_files = result.fetchall()
 
@@ -45,7 +45,7 @@ async def create_order(
     # Рассчитываем цену на основе количества страниц из базы данных
     total_price = 0
     for idx, file in enumerate(user_files):
-        total_price += file.pages * copies[idx] * price_per_page
+        total_price += file.pages_count * copies[idx] * price_per_page
 
     if duplex:
         total_price = int(total_price * 0.8)  # Скидка 20% за двустороннюю печать

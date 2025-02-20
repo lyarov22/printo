@@ -1,0 +1,3350 @@
+
+
+--- File: ./codeCollector.py ---
+
+import os
+
+def collect_repo_code(repo_path: str, output_file: str = "collected_code.txt"):
+    with open(output_file, "w", encoding="utf-8") as f_out:
+        for root, dirs, files in os.walk(repo_path):
+            # Исключаем каталог venv
+            if "venv" in root:
+                continue
+            
+            for file_name in files:
+                # Пропускаем скрытые и потенциально бинарные файлы
+                if file_name.startswith('.') or any(file_name.endswith(ext) for ext in ['.png','.jpg','.jpeg','.gif','.pdf','.exe','.dll']):
+                    continue
+
+                file_path = os.path.join(root, file_name)
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f_in:
+                        f_out.write(f"\n\n--- File: {file_path} ---\n\n")
+                        f_out.write(f_in.read())
+                except:
+                    # Если не удаётся прочитать файл как текст, пропускаем
+                    continue
+
+if __name__ == "__main__":
+    # Задайте путь к репозиторию
+    collect_repo_code("./")
+
+
+--- File: ./collected_code.txt ---
+
+
+
+--- File: ./docker-compose.yaml ---
+
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4001:4001"
+    env_file:
+      - .env
+    depends_on:
+      - db
+    volumes:
+      - ./app:/app
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "4001"]
+
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: printo
+      POSTGRES_PASSWORD: printo
+      POSTGRES_DB: printo
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+
+
+--- File: ./Dockerfile ---
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    cups \
+    libcups2-dev \
+    cups-pdf \
+    libpq-dev \
+    build-essential \
+    --no-install-recommends && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application files
+COPY . .
+
+# Expose application port
+EXPOSE 4001
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "4001"]
+
+
+--- File: ./main.py ---
+
+from fastapi import FastAPI
+from fastapi_utils.tasks import repeat_every
+from app.core.config import settings
+from app.api.v1.endpoints.auth import router as auth_router
+from app.api.v1.endpoints.file import router as file_router
+from app.api.v1.endpoints.order import router as order_router
+from app.api.v1.endpoints.payment import router as payment_router
+from app.api.v1.endpoints.print import router as print_router
+from app.db.session import engine, Base, get_db
+from app.tasks.cleanup import cleanup_old_files
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title=settings.PROJECT_NAME)
+api_version = settings.API_V1_STR
+
+# Register routers
+app.include_router(auth_router, prefix=f"{api_version}/auth", tags=["auth"])
+app.include_router(file_router, prefix=f"{api_version}/files", tags=["files"])
+app.include_router(order_router, prefix=f"{api_version}/orders", tags=["orders"])
+app.include_router(payment_router, prefix=f"{api_version}", tags=["payments"])
+app.include_router(print_router, prefix=f"{api_version}", tags=["print"])
+
+@app.on_event("startup")
+async def startup():
+    # Создаем таблицы в базе данных
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Startup event completed. Database tables created.")
+
+# Отдельная регистрация повторяющейся задачи
+@app.on_event("startup")
+@repeat_every(seconds=3600)  # Выполняем раз в час
+async def schedule_cleanup():
+    async for db in get_db():  # Используем get_db как генератор
+        await cleanup_old_files(db)
+
+
+--- File: ./production.md ---
+
+# Production Guide for Printo
+
+1. **Run docker container (port 4001):**:
+      ```bash
+      docker-compose up -d
+
+--- File: ./README.md ---
+
+# Production Guide for Printo
+
+## Installation Steps
+
+1. **Update and upgrade the system:**:
+   ```bash
+   sudo apt update && sudo apt upgrade
+
+2. **Install necessary system packages:**:
+   ```bash
+   sudo apt install cups libcups2-dev
+
+2.1 **Install dev deps**
+    ```bash
+    sudo apt install cups-pdf
+
+3. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+
+4. **Create the `.env` file**:
+   - In the root directory, create a file named `.env`.
+   - Add the following content and replace values as necessary:
+     ```env
+      PROJECT_NAME=MyApp
+      API_V1_STR=/api/v1
+      DATABASE_URL=postgresql+asyncpg://printo:printo@db:5432/printo
+      SECRET_KEY=supersecretkey
+      ALGORITHM=HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES=10080 #1 week
+      PRICE_PER_PAGE=40
+      PRINTER_NAME=PDF
+     ```
+
+5. **Run the server:**:
+   ```bash
+   uvicorn main:app --reload
+
+
+--- File: ./requirements.txt ---
+
+alembic==1.14.1
+annotated-types==0.7.0
+anyio==4.8.0
+async-timeout==5.0.1
+asyncpg==0.30.0
+certifi==2024.12.14
+click==8.1.8
+dnspython==2.7.0
+ecdsa==0.19.0
+email_validator==2.2.0
+exceptiongroup==1.2.2
+fastapi==0.115.7
+fastapi-cli==0.0.7
+fastapi-utils==0.8.0
+greenlet==3.1.1
+h11==0.14.0
+httpcore==1.0.7
+httptools==0.6.4
+httpx==0.28.1
+idna==3.10
+Jinja2==3.1.5
+Mako==1.3.8
+markdown-it-py==3.0.0
+MarkupSafe==3.0.2
+mdurl==0.1.2
+mypy-extensions==1.0.0
+passlib==1.7.4
+psutil==5.9.8
+psycopg2==2.9.10
+pyasn1==0.6.1
+pycryptodome==3.21.0
+pydantic==2.10.6
+pydantic-settings==2.7.1
+pydantic_core==2.27.2
+Pygments==2.19.1
+PyJWT==2.10.1
+pypandoc==1.14
+PyPDF2==3.0.1
+python-dotenv==1.0.1
+python-jose==3.3.0
+python-multipart==0.0.20
+PyYAML==6.0.2
+rich==13.9.4
+rich-toolkit==0.13.2
+rpds-py==0.22.3
+rsa==4.9
+shellingham==1.5.4
+six==1.17.0
+sniffio==1.3.1
+SQLAlchemy==2.0.37
+starlette==0.45.3
+tqdm==4.67.1
+typer==0.15.1
+types-uno-script==0.1.1
+typing-inspect==0.9.0
+typing_extensions==4.12.2
+unotools==0.3.3
+urllib3==2.3.0
+uvicorn==0.34.0
+uvloop==0.21.0
+watchfiles==1.0.4
+websockets==14.2
+# pycups-2.0.4
+
+--- File: ./.git\COMMIT_EDITMSG ---
+
+idk
+
+
+--- File: ./.git\config ---
+
+[core]
+	repositoryformatversion = 0
+	filemode = false
+	bare = false
+	logallrefupdates = true
+	symlinks = false
+	ignorecase = true
+[lfs]
+	repositoryformatversion = 0
+[remote "origin"]
+	url = https://github.com/lyarov22/printo.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+	vscode-merge-base = origin/main
+
+
+--- File: ./.git\description ---
+
+Unnamed repository; edit this file 'description' to name the repository.
+
+
+--- File: ./.git\FETCH_HEAD ---
+
+3480383f2be4ee7f8e5896bc0c982d26b3b564f7		branch 'main' of https://github.com/lyarov22/printo
+
+
+--- File: ./.git\HEAD ---
+
+ref: refs/heads/main
+
+
+--- File: ./.git\index ---
+
+
+
+--- File: ./.git\ORIG_HEAD ---
+
+819b501b62d1910906e3c6316fdd50a88c903a24
+
+
+--- File: ./.git\hooks\applypatch-msg.sample ---
+
+#!/bin/sh
+#
+# An example hook script to check the commit log message taken by
+# applypatch from an e-mail message.
+#
+# The hook should exit with non-zero status after issuing an
+# appropriate message if it wants to stop the commit.  The hook is
+# allowed to edit the commit message file.
+#
+# To enable this hook, rename this file to "applypatch-msg".
+
+. git-sh-setup
+commitmsg="$(git rev-parse --git-path hooks/commit-msg)"
+test -x "$commitmsg" && exec "$commitmsg" ${1+"$@"}
+:
+
+
+--- File: ./.git\hooks\commit-msg.sample ---
+
+#!/bin/sh
+#
+# An example hook script to check the commit log message.
+# Called by "git commit" with one argument, the name of the file
+# that has the commit message.  The hook should exit with non-zero
+# status after issuing an appropriate message if it wants to stop the
+# commit.  The hook is allowed to edit the commit message file.
+#
+# To enable this hook, rename this file to "commit-msg".
+
+# Uncomment the below to add a Signed-off-by line to the message.
+# Doing this in a hook is a bad idea in general, but the prepare-commit-msg
+# hook is more suited to it.
+#
+# SOB=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+# grep -qs "^$SOB" "$1" || echo "$SOB" >> "$1"
+
+# This example catches duplicate Signed-off-by lines.
+
+test "" = "$(grep '^Signed-off-by: ' "$1" |
+	 sort | uniq -c | sed -e '/^[ 	]*1[ 	]/d')" || {
+	echo >&2 Duplicate Signed-off-by lines.
+	exit 1
+}
+
+
+--- File: ./.git\hooks\fsmonitor-watchman.sample ---
+
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use IPC::Open2;
+
+# An example hook script to integrate Watchman
+# (https://facebook.github.io/watchman/) with git to speed up detecting
+# new and modified files.
+#
+# The hook is passed a version (currently 2) and last update token
+# formatted as a string and outputs to stdout a new update token and
+# all files that have been modified since the update token. Paths must
+# be relative to the root of the working tree and separated by a single NUL.
+#
+# To enable this hook, rename this file to "query-watchman" and set
+# 'git config core.fsmonitor .git/hooks/query-watchman'
+#
+my ($version, $last_update_token) = @ARGV;
+
+# Uncomment for debugging
+# print STDERR "$0 $version $last_update_token\n";
+
+# Check the hook interface version
+if ($version ne 2) {
+	die "Unsupported query-fsmonitor hook version '$version'.\n" .
+	    "Falling back to scanning...\n";
+}
+
+my $git_work_tree = get_working_dir();
+
+my $retry = 1;
+
+my $json_pkg;
+eval {
+	require JSON::XS;
+	$json_pkg = "JSON::XS";
+	1;
+} or do {
+	require JSON::PP;
+	$json_pkg = "JSON::PP";
+};
+
+launch_watchman();
+
+sub launch_watchman {
+	my $o = watchman_query();
+	if (is_work_tree_watched($o)) {
+		output_result($o->{clock}, @{$o->{files}});
+	}
+}
+
+sub output_result {
+	my ($clockid, @files) = @_;
+
+	# Uncomment for debugging watchman output
+	# open (my $fh, ">", ".git/watchman-output.out");
+	# binmode $fh, ":utf8";
+	# print $fh "$clockid\n@files\n";
+	# close $fh;
+
+	binmode STDOUT, ":utf8";
+	print $clockid;
+	print "\0";
+	local $, = "\0";
+	print @files;
+}
+
+sub watchman_clock {
+	my $response = qx/watchman clock "$git_work_tree"/;
+	die "Failed to get clock id on '$git_work_tree'.\n" .
+		"Falling back to scanning...\n" if $? != 0;
+
+	return $json_pkg->new->utf8->decode($response);
+}
+
+sub watchman_query {
+	my $pid = open2(\*CHLD_OUT, \*CHLD_IN, 'watchman -j --no-pretty')
+	or die "open2() failed: $!\n" .
+	"Falling back to scanning...\n";
+
+	# In the query expression below we're asking for names of files that
+	# changed since $last_update_token but not from the .git folder.
+	#
+	# To accomplish this, we're using the "since" generator to use the
+	# recency index to select candidate nodes and "fields" to limit the
+	# output to file names only. Then we're using the "expression" term to
+	# further constrain the results.
+	my $last_update_line = "";
+	if (substr($last_update_token, 0, 1) eq "c") {
+		$last_update_token = "\"$last_update_token\"";
+		$last_update_line = qq[\n"since": $last_update_token,];
+	}
+	my $query = <<"	END";
+		["query", "$git_work_tree", {$last_update_line
+			"fields": ["name"],
+			"expression": ["not", ["dirname", ".git"]]
+		}]
+	END
+
+	# Uncomment for debugging the watchman query
+	# open (my $fh, ">", ".git/watchman-query.json");
+	# print $fh $query;
+	# close $fh;
+
+	print CHLD_IN $query;
+	close CHLD_IN;
+	my $response = do {local $/; <CHLD_OUT>};
+
+	# Uncomment for debugging the watch response
+	# open ($fh, ">", ".git/watchman-response.json");
+	# print $fh $response;
+	# close $fh;
+
+	die "Watchman: command returned no output.\n" .
+	"Falling back to scanning...\n" if $response eq "";
+	die "Watchman: command returned invalid output: $response\n" .
+	"Falling back to scanning...\n" unless $response =~ /^\{/;
+
+	return $json_pkg->new->utf8->decode($response);
+}
+
+sub is_work_tree_watched {
+	my ($output) = @_;
+	my $error = $output->{error};
+	if ($retry > 0 and $error and $error =~ m/unable to resolve root .* directory (.*) is not watched/) {
+		$retry--;
+		my $response = qx/watchman watch "$git_work_tree"/;
+		die "Failed to make watchman watch '$git_work_tree'.\n" .
+		    "Falling back to scanning...\n" if $? != 0;
+		$output = $json_pkg->new->utf8->decode($response);
+		$error = $output->{error};
+		die "Watchman: $error.\n" .
+		"Falling back to scanning...\n" if $error;
+
+		# Uncomment for debugging watchman output
+		# open (my $fh, ">", ".git/watchman-output.out");
+		# close $fh;
+
+		# Watchman will always return all files on the first query so
+		# return the fast "everything is dirty" flag to git and do the
+		# Watchman query just to get it over with now so we won't pay
+		# the cost in git to look up each individual file.
+		my $o = watchman_clock();
+		$error = $output->{error};
+
+		die "Watchman: $error.\n" .
+		"Falling back to scanning...\n" if $error;
+
+		output_result($o->{clock}, ("/"));
+		$last_update_token = $o->{clock};
+
+		eval { launch_watchman() };
+		return 0;
+	}
+
+	die "Watchman: $error.\n" .
+	"Falling back to scanning...\n" if $error;
+
+	return 1;
+}
+
+sub get_working_dir {
+	my $working_dir;
+	if ($^O =~ 'msys' || $^O =~ 'cygwin') {
+		$working_dir = Win32::GetCwd();
+		$working_dir =~ tr/\\/\//;
+	} else {
+		require Cwd;
+		$working_dir = Cwd::cwd();
+	}
+
+	return $working_dir;
+}
+
+
+--- File: ./.git\hooks\post-update.sample ---
+
+#!/bin/sh
+#
+# An example hook script to prepare a packed repository for use over
+# dumb transports.
+#
+# To enable this hook, rename this file to "post-update".
+
+exec git update-server-info
+
+
+--- File: ./.git\hooks\pre-applypatch.sample ---
+
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed
+# by applypatch from an e-mail message.
+#
+# The hook should exit with non-zero status after issuing an
+# appropriate message if it wants to stop the commit.
+#
+# To enable this hook, rename this file to "pre-applypatch".
+
+. git-sh-setup
+precommit="$(git rev-parse --git-path hooks/pre-commit)"
+test -x "$precommit" && exec "$precommit" ${1+"$@"}
+:
+
+
+--- File: ./.git\hooks\pre-commit.sample ---
+
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed.
+# Called by "git commit" with no arguments.  The hook should
+# exit with non-zero status after issuing an appropriate message if
+# it wants to stop the commit.
+#
+# To enable this hook, rename this file to "pre-commit".
+
+if git rev-parse --verify HEAD >/dev/null 2>&1
+then
+	against=HEAD
+else
+	# Initial commit: diff against an empty tree object
+	against=$(git hash-object -t tree /dev/null)
+fi
+
+# If you want to allow non-ASCII filenames set this variable to true.
+allownonascii=$(git config --type=bool hooks.allownonascii)
+
+# Redirect output to stderr.
+exec 1>&2
+
+# Cross platform projects tend to avoid non-ASCII filenames; prevent
+# them from being added to the repository. We exploit the fact that the
+# printable range starts at the space character and ends with tilde.
+if [ "$allownonascii" != "true" ] &&
+	# Note that the use of brackets around a tr range is ok here, (it's
+	# even required, for portability to Solaris 10's /usr/bin/tr), since
+	# the square bracket bytes happen to fall in the designated range.
+	test $(git diff-index --cached --name-only --diff-filter=A -z $against |
+	  LC_ALL=C tr -d '[ -~]\0' | wc -c) != 0
+then
+	cat <<\EOF
+Error: Attempt to add a non-ASCII file name.
+
+This can cause problems if you want to work with people on other platforms.
+
+To be portable it is advisable to rename the file.
+
+If you know what you are doing you can disable this check using:
+
+  git config hooks.allownonascii true
+EOF
+	exit 1
+fi
+
+# If there are whitespace errors, print the offending file names and fail.
+exec git diff-index --check --cached $against --
+
+
+--- File: ./.git\hooks\pre-merge-commit.sample ---
+
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed.
+# Called by "git merge" with no arguments.  The hook should
+# exit with non-zero status after issuing an appropriate message to
+# stderr if it wants to stop the merge commit.
+#
+# To enable this hook, rename this file to "pre-merge-commit".
+
+. git-sh-setup
+test -x "$GIT_DIR/hooks/pre-commit" &&
+        exec "$GIT_DIR/hooks/pre-commit"
+:
+
+
+--- File: ./.git\hooks\pre-push.sample ---
+
+#!/bin/sh
+
+# An example hook script to verify what is about to be pushed.  Called by "git
+# push" after it has checked the remote status, but before anything has been
+# pushed.  If this script exits with a non-zero status nothing will be pushed.
+#
+# This hook is called with the following parameters:
+#
+# $1 -- Name of the remote to which the push is being done
+# $2 -- URL to which the push is being done
+#
+# If pushing without using a named remote those arguments will be equal.
+#
+# Information about the commits which are being pushed is supplied as lines to
+# the standard input in the form:
+#
+#   <local ref> <local oid> <remote ref> <remote oid>
+#
+# This sample shows how to prevent push of commits where the log message starts
+# with "WIP" (work in progress).
+
+remote="$1"
+url="$2"
+
+zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+
+while read local_ref local_oid remote_ref remote_oid
+do
+	if test "$local_oid" = "$zero"
+	then
+		# Handle delete
+		:
+	else
+		if test "$remote_oid" = "$zero"
+		then
+			# New branch, examine all commits
+			range="$local_oid"
+		else
+			# Update to existing branch, examine new commits
+			range="$remote_oid..$local_oid"
+		fi
+
+		# Check for WIP commit
+		commit=$(git rev-list -n 1 --grep '^WIP' "$range")
+		if test -n "$commit"
+		then
+			echo >&2 "Found WIP commit in $local_ref, not pushing"
+			exit 1
+		fi
+	fi
+done
+
+exit 0
+
+
+--- File: ./.git\hooks\pre-rebase.sample ---
+
+#!/bin/sh
+#
+# Copyright (c) 2006, 2008 Junio C Hamano
+#
+# The "pre-rebase" hook is run just before "git rebase" starts doing
+# its job, and can prevent the command from running by exiting with
+# non-zero status.
+#
+# The hook is called with the following parameters:
+#
+# $1 -- the upstream the series was forked from.
+# $2 -- the branch being rebased (or empty when rebasing the current branch).
+#
+# This sample shows how to prevent topic branches that are already
+# merged to 'next' branch from getting rebased, because allowing it
+# would result in rebasing already published history.
+
+publish=next
+basebranch="$1"
+if test "$#" = 2
+then
+	topic="refs/heads/$2"
+else
+	topic=`git symbolic-ref HEAD` ||
+	exit 0 ;# we do not interrupt rebasing detached HEAD
+fi
+
+case "$topic" in
+refs/heads/??/*)
+	;;
+*)
+	exit 0 ;# we do not interrupt others.
+	;;
+esac
+
+# Now we are dealing with a topic branch being rebased
+# on top of master.  Is it OK to rebase it?
+
+# Does the topic really exist?
+git show-ref -q "$topic" || {
+	echo >&2 "No such branch $topic"
+	exit 1
+}
+
+# Is topic fully merged to master?
+not_in_master=`git rev-list --pretty=oneline ^master "$topic"`
+if test -z "$not_in_master"
+then
+	echo >&2 "$topic is fully merged to master; better remove it."
+	exit 1 ;# we could allow it, but there is no point.
+fi
+
+# Is topic ever merged to next?  If so you should not be rebasing it.
+only_next_1=`git rev-list ^master "^$topic" ${publish} | sort`
+only_next_2=`git rev-list ^master           ${publish} | sort`
+if test "$only_next_1" = "$only_next_2"
+then
+	not_in_topic=`git rev-list "^$topic" master`
+	if test -z "$not_in_topic"
+	then
+		echo >&2 "$topic is already up to date with master"
+		exit 1 ;# we could allow it, but there is no point.
+	else
+		exit 0
+	fi
+else
+	not_in_next=`git rev-list --pretty=oneline ^${publish} "$topic"`
+	/usr/bin/perl -e '
+		my $topic = $ARGV[0];
+		my $msg = "* $topic has commits already merged to public branch:\n";
+		my (%not_in_next) = map {
+			/^([0-9a-f]+) /;
+			($1 => 1);
+		} split(/\n/, $ARGV[1]);
+		for my $elem (map {
+				/^([0-9a-f]+) (.*)$/;
+				[$1 => $2];
+			} split(/\n/, $ARGV[2])) {
+			if (!exists $not_in_next{$elem->[0]}) {
+				if ($msg) {
+					print STDERR $msg;
+					undef $msg;
+				}
+				print STDERR " $elem->[1]\n";
+			}
+		}
+	' "$topic" "$not_in_next" "$not_in_master"
+	exit 1
+fi
+
+<<\DOC_END
+
+This sample hook safeguards topic branches that have been
+published from being rewound.
+
+The workflow assumed here is:
+
+ * Once a topic branch forks from "master", "master" is never
+   merged into it again (either directly or indirectly).
+
+ * Once a topic branch is fully cooked and merged into "master",
+   it is deleted.  If you need to build on top of it to correct
+   earlier mistakes, a new topic branch is created by forking at
+   the tip of the "master".  This is not strictly necessary, but
+   it makes it easier to keep your history simple.
+
+ * Whenever you need to test or publish your changes to topic
+   branches, merge them into "next" branch.
+
+The script, being an example, hardcodes the publish branch name
+to be "next", but it is trivial to make it configurable via
+$GIT_DIR/config mechanism.
+
+With this workflow, you would want to know:
+
+(1) ... if a topic branch has ever been merged to "next".  Young
+    topic branches can have stupid mistakes you would rather
+    clean up before publishing, and things that have not been
+    merged into other branches can be easily rebased without
+    affecting other people.  But once it is published, you would
+    not want to rewind it.
+
+(2) ... if a topic branch has been fully merged to "master".
+    Then you can delete it.  More importantly, you should not
+    build on top of it -- other people may already want to
+    change things related to the topic as patches against your
+    "master", so if you need further changes, it is better to
+    fork the topic (perhaps with the same name) afresh from the
+    tip of "master".
+
+Let's look at this example:
+
+		   o---o---o---o---o---o---o---o---o---o "next"
+		  /       /           /           /
+		 /   a---a---b A     /           /
+		/   /               /           /
+	       /   /   c---c---c---c B         /
+	      /   /   /             \         /
+	     /   /   /   b---b C     \       /
+	    /   /   /   /             \     /
+    ---o---o---o---o---o---o---o---o---o---o---o "master"
+
+
+A, B and C are topic branches.
+
+ * A has one fix since it was merged up to "next".
+
+ * B has finished.  It has been fully merged up to "master" and "next",
+   and is ready to be deleted.
+
+ * C has not merged to "next" at all.
+
+We would want to allow C to be rebased, refuse A, and encourage
+B to be deleted.
+
+To compute (1):
+
+	git rev-list ^master ^topic next
+	git rev-list ^master        next
+
+	if these match, topic has not merged in next at all.
+
+To compute (2):
+
+	git rev-list master..topic
+
+	if this is empty, it is fully merged to "master".
+
+DOC_END
+
+
+--- File: ./.git\hooks\pre-receive.sample ---
+
+#!/bin/sh
+#
+# An example hook script to make use of push options.
+# The example simply echoes all push options that start with 'echoback='
+# and rejects all pushes when the "reject" push option is used.
+#
+# To enable this hook, rename this file to "pre-receive".
+
+if test -n "$GIT_PUSH_OPTION_COUNT"
+then
+	i=0
+	while test "$i" -lt "$GIT_PUSH_OPTION_COUNT"
+	do
+		eval "value=\$GIT_PUSH_OPTION_$i"
+		case "$value" in
+		echoback=*)
+			echo "echo from the pre-receive-hook: ${value#*=}" >&2
+			;;
+		reject)
+			exit 1
+		esac
+		i=$((i + 1))
+	done
+fi
+
+
+--- File: ./.git\hooks\prepare-commit-msg.sample ---
+
+#!/bin/sh
+#
+# An example hook script to prepare the commit log message.
+# Called by "git commit" with the name of the file that has the
+# commit message, followed by the description of the commit
+# message's source.  The hook's purpose is to edit the commit
+# message file.  If the hook fails with a non-zero status,
+# the commit is aborted.
+#
+# To enable this hook, rename this file to "prepare-commit-msg".
+
+# This hook includes three examples. The first one removes the
+# "# Please enter the commit message..." help message.
+#
+# The second includes the output of "git diff --name-status -r"
+# into the message, just before the "git status" output.  It is
+# commented because it doesn't cope with --amend or with squashed
+# commits.
+#
+# The third example adds a Signed-off-by line to the message, that can
+# still be edited.  This is rarely a good idea.
+
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+SHA1=$3
+
+/usr/bin/perl -i.bak -ne 'print unless(m/^. Please enter the commit message/..m/^#$/)' "$COMMIT_MSG_FILE"
+
+# case "$COMMIT_SOURCE,$SHA1" in
+#  ,|template,)
+#    /usr/bin/perl -i.bak -pe '
+#       print "\n" . `git diff --cached --name-status -r`
+# 	 if /^#/ && $first++ == 0' "$COMMIT_MSG_FILE" ;;
+#  *) ;;
+# esac
+
+# SOB=$(git var GIT_COMMITTER_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+# git interpret-trailers --in-place --trailer "$SOB" "$COMMIT_MSG_FILE"
+# if test -z "$COMMIT_SOURCE"
+# then
+#   /usr/bin/perl -i.bak -pe 'print "\n" if !$first_line++' "$COMMIT_MSG_FILE"
+# fi
+
+
+--- File: ./.git\hooks\push-to-checkout.sample ---
+
+#!/bin/sh
+
+# An example hook script to update a checked-out tree on a git push.
+#
+# This hook is invoked by git-receive-pack(1) when it reacts to git
+# push and updates reference(s) in its repository, and when the push
+# tries to update the branch that is currently checked out and the
+# receive.denyCurrentBranch configuration variable is set to
+# updateInstead.
+#
+# By default, such a push is refused if the working tree and the index
+# of the remote repository has any difference from the currently
+# checked out commit; when both the working tree and the index match
+# the current commit, they are updated to match the newly pushed tip
+# of the branch. This hook is to be used to override the default
+# behaviour; however the code below reimplements the default behaviour
+# as a starting point for convenient modification.
+#
+# The hook receives the commit with which the tip of the current
+# branch is going to be updated:
+commit=$1
+
+# It can exit with a non-zero status to refuse the push (when it does
+# so, it must not modify the index or the working tree).
+die () {
+	echo >&2 "$*"
+	exit 1
+}
+
+# Or it can make any necessary changes to the working tree and to the
+# index to bring them to the desired state when the tip of the current
+# branch is updated to the new commit, and exit with a zero status.
+#
+# For example, the hook can simply run git read-tree -u -m HEAD "$1"
+# in order to emulate git fetch that is run in the reverse direction
+# with git push, as the two-tree form of git read-tree -u -m is
+# essentially the same as git switch or git checkout that switches
+# branches while keeping the local changes in the working tree that do
+# not interfere with the difference between the branches.
+
+# The below is a more-or-less exact translation to shell of the C code
+# for the default behaviour for git's push-to-checkout hook defined in
+# the push_to_deploy() function in builtin/receive-pack.c.
+#
+# Note that the hook will be executed from the repository directory,
+# not from the working tree, so if you want to perform operations on
+# the working tree, you will have to adapt your code accordingly, e.g.
+# by adding "cd .." or using relative paths.
+
+if ! git update-index -q --ignore-submodules --refresh
+then
+	die "Up-to-date check failed"
+fi
+
+if ! git diff-files --quiet --ignore-submodules --
+then
+	die "Working directory has unstaged changes"
+fi
+
+# This is a rough translation of:
+#
+#   head_has_history() ? "HEAD" : EMPTY_TREE_SHA1_HEX
+if git cat-file -e HEAD 2>/dev/null
+then
+	head=HEAD
+else
+	head=$(git hash-object -t tree --stdin </dev/null)
+fi
+
+if ! git diff-index --quiet --cached --ignore-submodules $head --
+then
+	die "Working directory has staged changes"
+fi
+
+if ! git read-tree -u -m "$commit"
+then
+	die "Could not update working tree to new HEAD"
+fi
+
+
+--- File: ./.git\hooks\sendemail-validate.sample ---
+
+#!/bin/sh
+
+# An example hook script to validate a patch (and/or patch series) before
+# sending it via email.
+#
+# The hook should exit with non-zero status after issuing an appropriate
+# message if it wants to prevent the email(s) from being sent.
+#
+# To enable this hook, rename this file to "sendemail-validate".
+#
+# By default, it will only check that the patch(es) can be applied on top of
+# the default upstream branch without conflicts in a secondary worktree. After
+# validation (successful or not) of the last patch of a series, the worktree
+# will be deleted.
+#
+# The following config variables can be set to change the default remote and
+# remote ref that are used to apply the patches against:
+#
+#   sendemail.validateRemote (default: origin)
+#   sendemail.validateRemoteRef (default: HEAD)
+#
+# Replace the TODO placeholders with appropriate checks according to your
+# needs.
+
+validate_cover_letter () {
+	file="$1"
+	# TODO: Replace with appropriate checks (e.g. spell checking).
+	true
+}
+
+validate_patch () {
+	file="$1"
+	# Ensure that the patch applies without conflicts.
+	git am -3 "$file" || return
+	# TODO: Replace with appropriate checks for this patch
+	# (e.g. checkpatch.pl).
+	true
+}
+
+validate_series () {
+	# TODO: Replace with appropriate checks for the whole series
+	# (e.g. quick build, coding style checks, etc.).
+	true
+}
+
+# main -------------------------------------------------------------------------
+
+if test "$GIT_SENDEMAIL_FILE_COUNTER" = 1
+then
+	remote=$(git config --default origin --get sendemail.validateRemote) &&
+	ref=$(git config --default HEAD --get sendemail.validateRemoteRef) &&
+	worktree=$(mktemp --tmpdir -d sendemail-validate.XXXXXXX) &&
+	git worktree add -fd --checkout "$worktree" "refs/remotes/$remote/$ref" &&
+	git config --replace-all sendemail.validateWorktree "$worktree"
+else
+	worktree=$(git config --get sendemail.validateWorktree)
+fi || {
+	echo "sendemail-validate: error: failed to prepare worktree" >&2
+	exit 1
+}
+
+unset GIT_DIR GIT_WORK_TREE
+cd "$worktree" &&
+
+if grep -q "^diff --git " "$1"
+then
+	validate_patch "$1"
+else
+	validate_cover_letter "$1"
+fi &&
+
+if test "$GIT_SENDEMAIL_FILE_COUNTER" = "$GIT_SENDEMAIL_FILE_TOTAL"
+then
+	git config --unset-all sendemail.validateWorktree &&
+	trap 'git worktree remove -ff "$worktree"' EXIT &&
+	validate_series
+fi
+
+
+--- File: ./.git\hooks\update.sample ---
+
+#!/bin/sh
+#
+# An example hook script to block unannotated tags from entering.
+# Called by "git receive-pack" with arguments: refname sha1-old sha1-new
+#
+# To enable this hook, rename this file to "update".
+#
+# Config
+# ------
+# hooks.allowunannotated
+#   This boolean sets whether unannotated tags will be allowed into the
+#   repository.  By default they won't be.
+# hooks.allowdeletetag
+#   This boolean sets whether deleting tags will be allowed in the
+#   repository.  By default they won't be.
+# hooks.allowmodifytag
+#   This boolean sets whether a tag may be modified after creation. By default
+#   it won't be.
+# hooks.allowdeletebranch
+#   This boolean sets whether deleting branches will be allowed in the
+#   repository.  By default they won't be.
+# hooks.denycreatebranch
+#   This boolean sets whether remotely creating branches will be denied
+#   in the repository.  By default this is allowed.
+#
+
+# --- Command line
+refname="$1"
+oldrev="$2"
+newrev="$3"
+
+# --- Safety check
+if [ -z "$GIT_DIR" ]; then
+	echo "Don't run this script from the command line." >&2
+	echo " (if you want, you could supply GIT_DIR then run" >&2
+	echo "  $0 <ref> <oldrev> <newrev>)" >&2
+	exit 1
+fi
+
+if [ -z "$refname" -o -z "$oldrev" -o -z "$newrev" ]; then
+	echo "usage: $0 <ref> <oldrev> <newrev>" >&2
+	exit 1
+fi
+
+# --- Config
+allowunannotated=$(git config --type=bool hooks.allowunannotated)
+allowdeletebranch=$(git config --type=bool hooks.allowdeletebranch)
+denycreatebranch=$(git config --type=bool hooks.denycreatebranch)
+allowdeletetag=$(git config --type=bool hooks.allowdeletetag)
+allowmodifytag=$(git config --type=bool hooks.allowmodifytag)
+
+# check for no description
+projectdesc=$(sed -e '1q' "$GIT_DIR/description")
+case "$projectdesc" in
+"Unnamed repository"* | "")
+	echo "*** Project description file hasn't been set" >&2
+	exit 1
+	;;
+esac
+
+# --- Check types
+# if $newrev is 0000...0000, it's a commit to delete a ref.
+zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+if [ "$newrev" = "$zero" ]; then
+	newrev_type=delete
+else
+	newrev_type=$(git cat-file -t $newrev)
+fi
+
+case "$refname","$newrev_type" in
+	refs/tags/*,commit)
+		# un-annotated tag
+		short_refname=${refname##refs/tags/}
+		if [ "$allowunannotated" != "true" ]; then
+			echo "*** The un-annotated tag, $short_refname, is not allowed in this repository" >&2
+			echo "*** Use 'git tag [ -a | -s ]' for tags you want to propagate." >&2
+			exit 1
+		fi
+		;;
+	refs/tags/*,delete)
+		# delete tag
+		if [ "$allowdeletetag" != "true" ]; then
+			echo "*** Deleting a tag is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/tags/*,tag)
+		# annotated tag
+		if [ "$allowmodifytag" != "true" ] && git rev-parse $refname > /dev/null 2>&1
+		then
+			echo "*** Tag '$refname' already exists." >&2
+			echo "*** Modifying a tag is not allowed in this repository." >&2
+			exit 1
+		fi
+		;;
+	refs/heads/*,commit)
+		# branch
+		if [ "$oldrev" = "$zero" -a "$denycreatebranch" = "true" ]; then
+			echo "*** Creating a branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/heads/*,delete)
+		# delete branch
+		if [ "$allowdeletebranch" != "true" ]; then
+			echo "*** Deleting a branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/remotes/*,commit)
+		# tracking branch
+		;;
+	refs/remotes/*,delete)
+		# delete tracking branch
+		if [ "$allowdeletebranch" != "true" ]; then
+			echo "*** Deleting a tracking branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	*)
+		# Anything else (is there anything else?)
+		echo "*** Update hook: unknown type of update to ref $refname of type $newrev_type" >&2
+		exit 1
+		;;
+esac
+
+# --- Finished
+exit 0
+
+
+--- File: ./.git\info\exclude ---
+
+# git ls-files --others --exclude-from=.git/info/exclude
+# Lines that start with '#' are comments.
+# For a project mostly in C, the following would be a good set of
+# exclude patterns (uncomment them if you want to use them):
+# *.[oa]
+# *~
+
+
+--- File: ./.git\logs\HEAD ---
+
+0000000000000000000000000000000000000000 9982561c3351dcbf4ac8d7fa017c97b51b5a85c2 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735323505 +0500	commit (initial): Initial commit
+9982561c3351dcbf4ac8d7fa017c97b51b5a85c2 569e3c0d07c6c6930ec45f0110323e1cac230f5a Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735849848 +0500	commit: auth system done
+569e3c0d07c6c6930ec45f0110323e1cac230f5a 53e7783eb9915da19f482de68c704ed207fc577a Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735854043 +0500	commit: file upload
+53e7783eb9915da19f482de68c704ed207fc577a 569e3c0d07c6c6930ec45f0110323e1cac230f5a Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735854056 +0500	reset: moving to 569e3c0d07c6c6930ec45f0110323e1cac230f5a
+569e3c0d07c6c6930ec45f0110323e1cac230f5a 3baa38e8d624c506550e1984bcaf97ef6dd26b67 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735854059 +0500	commit: file upload done
+3baa38e8d624c506550e1984bcaf97ef6dd26b67 d262f81dc179ee80bfa1e05ceb383c2585136646 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735856272 +0500	commit: file crud done
+d262f81dc179ee80bfa1e05ceb383c2585136646 0ead8d1d17c6e19d2c7ae6d1b368948cb1e9b980 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735856702 +0500	commit: report invalid token
+0ead8d1d17c6e19d2c7ae6d1b368948cb1e9b980 d892efa00c912089fbf6b7e7253afcd61c40053a Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735857649 +0500	commit: order system in process
+d892efa00c912089fbf6b7e7253afcd61c40053a d061915d44744bd2a967e8f1c2b45a894f0e3fc8 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735861102 +0500	commit: order creation system done
+d061915d44744bd2a967e8f1c2b45a894f0e3fc8 9bd9ca6425afc358e2dfddfca483d42805dc621f Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735863680 +0500	commit: order creation done, order list%
+9bd9ca6425afc358e2dfddfca483d42805dc621f 600256916d56db1131d29322ff7eaf32c2b1e8de Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1736766201 +0500	commit: attempt to use libreoffice(BAD)
+600256916d56db1131d29322ff7eaf32c2b1e8de 819b501b62d1910906e3c6316fdd50a88c903a24 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1737855290 +0500	commit: migrate to linux
+819b501b62d1910906e3c6316fdd50a88c903a24 452e06e42a441775def6dc084be1ba07f674cdc1 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1740009903 +0500	pull --ff --recurse-submodules --progress origin: Fast-forward
+452e06e42a441775def6dc084be1ba07f674cdc1 3480383f2be4ee7f8e5896bc0c982d26b3b564f7 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1740028392 +0500	commit: idk
+
+
+--- File: ./.git\logs\refs\heads\main ---
+
+0000000000000000000000000000000000000000 9982561c3351dcbf4ac8d7fa017c97b51b5a85c2 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735323505 +0500	commit (initial): Initial commit
+9982561c3351dcbf4ac8d7fa017c97b51b5a85c2 569e3c0d07c6c6930ec45f0110323e1cac230f5a Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735849848 +0500	commit: auth system done
+569e3c0d07c6c6930ec45f0110323e1cac230f5a 53e7783eb9915da19f482de68c704ed207fc577a Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735854043 +0500	commit: file upload
+53e7783eb9915da19f482de68c704ed207fc577a 569e3c0d07c6c6930ec45f0110323e1cac230f5a Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735854056 +0500	reset: moving to 569e3c0d07c6c6930ec45f0110323e1cac230f5a
+569e3c0d07c6c6930ec45f0110323e1cac230f5a 3baa38e8d624c506550e1984bcaf97ef6dd26b67 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735854059 +0500	commit: file upload done
+3baa38e8d624c506550e1984bcaf97ef6dd26b67 d262f81dc179ee80bfa1e05ceb383c2585136646 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735856272 +0500	commit: file crud done
+d262f81dc179ee80bfa1e05ceb383c2585136646 0ead8d1d17c6e19d2c7ae6d1b368948cb1e9b980 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735856702 +0500	commit: report invalid token
+0ead8d1d17c6e19d2c7ae6d1b368948cb1e9b980 d892efa00c912089fbf6b7e7253afcd61c40053a Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735857649 +0500	commit: order system in process
+d892efa00c912089fbf6b7e7253afcd61c40053a d061915d44744bd2a967e8f1c2b45a894f0e3fc8 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735861102 +0500	commit: order creation system done
+d061915d44744bd2a967e8f1c2b45a894f0e3fc8 9bd9ca6425afc358e2dfddfca483d42805dc621f Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735863680 +0500	commit: order creation done, order list%
+9bd9ca6425afc358e2dfddfca483d42805dc621f 600256916d56db1131d29322ff7eaf32c2b1e8de Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1736766201 +0500	commit: attempt to use libreoffice(BAD)
+600256916d56db1131d29322ff7eaf32c2b1e8de 819b501b62d1910906e3c6316fdd50a88c903a24 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1737855290 +0500	commit: migrate to linux
+819b501b62d1910906e3c6316fdd50a88c903a24 452e06e42a441775def6dc084be1ba07f674cdc1 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1740009903 +0500	pull --ff --recurse-submodules --progress origin: Fast-forward
+452e06e42a441775def6dc084be1ba07f674cdc1 3480383f2be4ee7f8e5896bc0c982d26b3b564f7 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1740028392 +0500	commit: idk
+
+
+--- File: ./.git\logs\refs\remotes\origin\HEAD ---
+
+0000000000000000000000000000000000000000 d262f81dc179ee80bfa1e05ceb383c2585136646 илья Фёдоров <dyudy@Asrock-B450.(none)> 1735856288 +0500	remote set-head
+0ead8d1d17c6e19d2c7ae6d1b368948cb1e9b980 0ead8d1d17c6e19d2c7ae6d1b368948cb1e9b980 илья Фёдоров <dyudy@Asrock-B450.(none)> 1735856708 +0500	remote set-head
+d892efa00c912089fbf6b7e7253afcd61c40053a d892efa00c912089fbf6b7e7253afcd61c40053a илья Фёдоров <dyudy@Asrock-B450.(none)> 1735857654 +0500	remote set-head
+d061915d44744bd2a967e8f1c2b45a894f0e3fc8 d061915d44744bd2a967e8f1c2b45a894f0e3fc8 илья Фёдоров <dyudy@Asrock-B450.(none)> 1735861108 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1735863687 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1735898275 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1735900246 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1735902545 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1735907785 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1735917280 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1735919247 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1735924831 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1735993232 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1735995206 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1736028342 +0500	remote set-head
+9bd9ca6425afc358e2dfddfca483d42805dc621f 9bd9ca6425afc358e2dfddfca483d42805dc621f илья Фёдоров <dyudy@Asrock-B450.(none)> 1736766174 +0500	remote set-head
+600256916d56db1131d29322ff7eaf32c2b1e8de 600256916d56db1131d29322ff7eaf32c2b1e8de илья Фёдоров <dyudy@Asrock-B450.(none)> 1736766205 +0500	remote set-head
+600256916d56db1131d29322ff7eaf32c2b1e8de 600256916d56db1131d29322ff7eaf32c2b1e8de илья Фёдоров <dyudy@Asrock-B450.(none)> 1737852762 +0500	remote set-head
+819b501b62d1910906e3c6316fdd50a88c903a24 819b501b62d1910906e3c6316fdd50a88c903a24 илья Фёдоров <dyudy@Asrock-B450.(none)> 1737855303 +0500	remote set-head
+452e06e42a441775def6dc084be1ba07f674cdc1 452e06e42a441775def6dc084be1ba07f674cdc1 илья Фёдоров <dyudy@Asrock-B450.(none)> 1738297069 +0500	remote set-head
+452e06e42a441775def6dc084be1ba07f674cdc1 452e06e42a441775def6dc084be1ba07f674cdc1 илья Фёдоров <dyudy@Asrock-B450.(none)> 1740009905 +0500	remote set-head
+3480383f2be4ee7f8e5896bc0c982d26b3b564f7 3480383f2be4ee7f8e5896bc0c982d26b3b564f7 илья Фёдоров <dyudy@Asrock-B450.(none)> 1740028400 +0500	remote set-head
+
+
+--- File: ./.git\logs\refs\remotes\origin\main ---
+
+0000000000000000000000000000000000000000 d262f81dc179ee80bfa1e05ceb383c2585136646 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735856286 +0500	update by push
+d262f81dc179ee80bfa1e05ceb383c2585136646 0ead8d1d17c6e19d2c7ae6d1b368948cb1e9b980 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735856705 +0500	update by push
+0ead8d1d17c6e19d2c7ae6d1b368948cb1e9b980 d892efa00c912089fbf6b7e7253afcd61c40053a Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735857652 +0500	update by push
+d892efa00c912089fbf6b7e7253afcd61c40053a d061915d44744bd2a967e8f1c2b45a894f0e3fc8 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735861105 +0500	update by push
+d061915d44744bd2a967e8f1c2b45a894f0e3fc8 9bd9ca6425afc358e2dfddfca483d42805dc621f Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1735863685 +0500	update by push
+9bd9ca6425afc358e2dfddfca483d42805dc621f 600256916d56db1131d29322ff7eaf32c2b1e8de Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1736766203 +0500	update by push
+600256916d56db1131d29322ff7eaf32c2b1e8de 819b501b62d1910906e3c6316fdd50a88c903a24 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1737855301 +0500	update by push
+819b501b62d1910906e3c6316fdd50a88c903a24 452e06e42a441775def6dc084be1ba07f674cdc1 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1738297068 +0500	fetch --progress --prune --recurse-submodules=on-demand origin: fast-forward
+452e06e42a441775def6dc084be1ba07f674cdc1 3480383f2be4ee7f8e5896bc0c982d26b3b564f7 Фёдоров Илья <96327924+lyarov22@users.noreply.github.com> 1740028399 +0500	update by push
+
+
+--- File: ./.git\objects\01\e891f8467ca38f7085efe02ce013ed93d082a8 ---
+
+
+
+--- File: ./.git\objects\04\134c14cc6c26b6ccc1bb6cbdc793e8d24b4aa6 ---
+
+
+
+--- File: ./.git\objects\06\b863de1a67b3365cb3ad448bebd9930864bd02 ---
+
+
+
+--- File: ./.git\objects\07\21902d485107344291f7c7b56e289a88f81b8e ---
+
+
+
+--- File: ./.git\objects\07\bbd2fa00c6281208853914aaa107d89bd2fa0d ---
+
+
+
+--- File: ./.git\objects\09\f0585127bdd10ea281eed71d20f7d338ab6a7d ---
+
+
+
+--- File: ./.git\objects\0a\aa1e59120bbccdf4cb4e7b571f9b059f4da0f8 ---
+
+
+
+--- File: ./.git\objects\0a\e63e622142dbcf23e316a5c47608928e120c35 ---
+
+
+
+--- File: ./.git\objects\0c\6557f698779901758d67f81acdf89df00b2e84 ---
+
+
+
+--- File: ./.git\objects\0e\ad8d1d17c6e19d2c7ae6d1b368948cb1e9b980 ---
+
+
+
+--- File: ./.git\objects\10\2a22ccf4392061ac480827ca5a67cefd477536 ---
+
+
+
+--- File: ./.git\objects\15\7c214ba2fd5c1dd7caff1e499dbf358c53c5be ---
+
+
+
+--- File: ./.git\objects\15\b8af715b71502b38d21f413840f68392863397 ---
+
+
+
+--- File: ./.git\objects\1b\432c3895d8722e8beb975e1c866d73e9512f25 ---
+
+
+
+--- File: ./.git\objects\1d\8423da2bcdbc2a7c009c49edcad8a6971a8c6b ---
+
+
+
+--- File: ./.git\objects\1f\8251f02d5083023d811256813df907b40bb810 ---
+
+
+
+--- File: ./.git\objects\22\915798e5b46147dafcb2474971045af28f8aa9 ---
+
+
+
+--- File: ./.git\objects\23\d1d7af4f3a34e4bc656416d31be9a2b0992999 ---
+
+
+
+--- File: ./.git\objects\24\dab4e3dffb76b9cbe01cb972bc8b7a4210248b ---
+
+
+
+--- File: ./.git\objects\28\857238924142f822cc552c27c9768c38b8d73d ---
+
+
+
+--- File: ./.git\objects\2b\ac27b96c8b6ac9ed203514b50e2bfc9cb7e6b1 ---
+
+
+
+--- File: ./.git\objects\2c\52ad3c74989b4a2c3d542413c6ce2065a26dea ---
+
+
+
+--- File: ./.git\objects\30\9ce1d2828e2a2940a3f37a6404b7d806339b18 ---
+
+
+
+--- File: ./.git\objects\31\8c202d539dc44f682c8da4882001f6ec6dece8 ---
+
+
+
+--- File: ./.git\objects\31\97a3663a819d435fefe0b0f484147e7244a978 ---
+
+
+
+--- File: ./.git\objects\34\80383f2be4ee7f8e5896bc0c982d26b3b564f7 ---
+
+
+
+--- File: ./.git\objects\35\a268a17e6e8460962cbe446ea1c9c1d74a089e ---
+
+
+
+--- File: ./.git\objects\35\d3c4aced19ce1c66447d2263f37dca3a54bda4 ---
+
+
+
+--- File: ./.git\objects\36\4e6c5cc218875b4d0724c7b9e7f395e54a0dd6 ---
+
+
+
+--- File: ./.git\objects\37\c9603e2fcc2774f9ac3e539582ba81b442840a ---
+
+
+
+--- File: ./.git\objects\38\54692da9ce217292151db612b648eca90735cd ---
+
+
+
+--- File: ./.git\objects\38\9649d6849dfb93eaf757a67a248a71cc3545d6 ---
+
+
+
+--- File: ./.git\objects\39\37d947658d7c1a12de708e62cef98f4299a8b4 ---
+
+
+
+--- File: ./.git\objects\39\b626dd7cf9ec20e50f1e932c772a71754714e9 ---
+
+
+
+--- File: ./.git\objects\3b\aa38e8d624c506550e1984bcaf97ef6dd26b67 ---
+
+
+
+--- File: ./.git\objects\3b\daddb12292e174d826d8903c571a2c6e5a0be0 ---
+
+
+
+--- File: ./.git\objects\3d\913feeb1b602d6179eaa44e63bca4c2b402bb6 ---
+
+
+
+--- File: ./.git\objects\3d\b698e0dfc89f0b13fdc10c97427ce6e35ff98e ---
+
+
+
+--- File: ./.git\objects\3d\c646ccb4132e66778ac54c9d02d7f335a691ab ---
+
+
+
+--- File: ./.git\objects\3f\94e6b5c8ae98b6927ae7627faa77bb46048c14 ---
+
+
+
+--- File: ./.git\objects\40\e83e8f1553ac9b225a8bf9f091b80dfd9e1047 ---
+
+
+
+--- File: ./.git\objects\41\2dec7fa559244e287e5f2776e15a0c060cd5ba ---
+
+
+
+--- File: ./.git\objects\45\2e06e42a441775def6dc084be1ba07f674cdc1 ---
+
+
+
+--- File: ./.git\objects\45\8c524e4f2bbc8fb71d79583c9d1305396eaab5 ---
+
+
+
+--- File: ./.git\objects\48\24db8a99db88439ca023d7f526eb3221c4e375 ---
+
+
+
+--- File: ./.git\objects\4b\550c89598f76c9646bd3b9d3b119bbcf184542 ---
+
+
+
+--- File: ./.git\objects\4b\6edf56a5872d55a1493616b8b88437df70675e ---
+
+
+
+--- File: ./.git\objects\4c\fc547e20721cba01c65c3594f0b067060c6284 ---
+
+
+
+--- File: ./.git\objects\4d\8dca47e3badac832b18827359c832c57b33b72 ---
+
+
+
+--- File: ./.git\objects\4d\a9f07242bea4775d53fabc8aa8a2b0d198bc51 ---
+
+
+
+--- File: ./.git\objects\50\0e5ff65c2f115d4d6b9d935eaff6db2aa67765 ---
+
+
+
+--- File: ./.git\objects\50\6501e1b8fb79cff9ff6faa1a1d45a7dfb4a561 ---
+
+
+
+--- File: ./.git\objects\50\8d63b8200e61039af36dedcc28ecdc23385fda ---
+
+
+
+--- File: ./.git\objects\53\e7783eb9915da19f482de68c704ed207fc577a ---
+
+
+
+--- File: ./.git\objects\54\b0b22f1d0683c306ac9599bdf8d4796b34481e ---
+
+
+
+--- File: ./.git\objects\55\31de2d5411d9d1624135476d8821cb6ade24c8 ---
+
+
+
+--- File: ./.git\objects\55\8046c3d5e157163c077f7088d240b2c3ce04c8 ---
+
+
+
+--- File: ./.git\objects\56\9e3c0d07c6c6930ec45f0110323e1cac230f5a ---
+
+
+
+--- File: ./.git\objects\58\0051a5a2f352c00b1ddd5324e5680907d4559a ---
+
+
+
+--- File: ./.git\objects\58\74640d42c9753eb064424485781baf10b7af93 ---
+
+
+
+--- File: ./.git\objects\59\55cbcf1c5da0becce11a11baac0762cd1fdbb6 ---
+
+
+
+--- File: ./.git\objects\59\d88d6c2ead43ce54c25aab00134f5dabdcb769 ---
+
+
+
+--- File: ./.git\objects\5a\92c867c801f6528665992c406e00db7f6b9c71 ---
+
+
+
+--- File: ./.git\objects\5a\d88529b339946c99ca5a3f6254c7a6aaf6a01a ---
+
+
+
+--- File: ./.git\objects\5b\388ce34db0abaa30a0282cc0f1c283daa34b3d ---
+
+
+
+--- File: ./.git\objects\5c\40b16aedddb15fb669e6ef92bd6f39d75bd13e ---
+
+
+
+--- File: ./.git\objects\5d\3d85b22616beb4868327a81322ab4061d33798 ---
+
+
+
+--- File: ./.git\objects\5d\d1d4a9ce3ab2a1cab56d5e9e04f0287d55c8cd ---
+
+
+
+--- File: ./.git\objects\60\0256916d56db1131d29322ff7eaf32c2b1e8de ---
+
+
+
+--- File: ./.git\objects\62\05c1df53882688d25a5f0fc86a2751b0c1e03d ---
+
+
+
+--- File: ./.git\objects\65\034c6d4b7d3f0afa418e18229758c2145fc859 ---
+
+
+
+--- File: ./.git\objects\65\b1dd7625187ea0de6e5b46b60b67ceedca2a1b ---
+
+
+
+--- File: ./.git\objects\67\23e4737a02ba016ca10951d6c3dd9d5df18478 ---
+
+
+
+--- File: ./.git\objects\67\59bdbdcb0f5cf660582a07fb09fa75233330b3 ---
+
+
+
+--- File: ./.git\objects\67\9186ffcfb6f68a0c38f6801ca209afb1399d38 ---
+
+
+
+--- File: ./.git\objects\68\58a41401492747dba3c0ac3caaaeff38fb7d79 ---
+
+
+
+--- File: ./.git\objects\68\bc17f9ff2104a9d7b6777058bb4c343ca72609 ---
+
+
+
+--- File: ./.git\objects\68\fde1293194628b4320f9d93dca763735702aea ---
+
+
+
+--- File: ./.git\objects\6c\50958d840c2ea8397b0690e5c024494318735a ---
+
+
+
+--- File: ./.git\objects\6f\dea533559d2ec7e4389b3e88e5e713f5015e7a ---
+
+
+
+--- File: ./.git\objects\70\8322ed6976f12440601904b39072dd1984af7c ---
+
+
+
+--- File: ./.git\objects\70\d241be7969c6be649951dd3cfa6cea838a31ef ---
+
+
+
+--- File: ./.git\objects\71\47d36d75ec02c58915c95bb285cfffc6b30e30 ---
+
+
+
+--- File: ./.git\objects\72\d013cd0f9a3503674f14299a9674999cda38ee ---
+
+
+
+--- File: ./.git\objects\73\0e1dbfa935095bb38c06b73d2556e19e6d0a9e ---
+
+
+
+--- File: ./.git\objects\73\d1852690687c12f30644e894f4228276ced261 ---
+
+
+
+--- File: ./.git\objects\73\e4b7f85e863727c211bb3980276e2e187eb067 ---
+
+
+
+--- File: ./.git\objects\73\f3fad70f429a4a0bbfbccb35bfb24f2d55f32e ---
+
+
+
+--- File: ./.git\objects\76\73558705888f9b4e066305d3188a004772b40c ---
+
+
+
+--- File: ./.git\objects\78\1b2524c356db3db76677ead592385a2a868db9 ---
+
+
+
+--- File: ./.git\objects\79\3521972d9abb2d4274a79fc4cf9d6cbdfb819a ---
+
+
+
+--- File: ./.git\objects\7a\b915cd30d15adffdc73f79fbd6837b4d6bad5c ---
+
+
+
+--- File: ./.git\objects\7b\3e3973a342d559486b244ecee90126aed18003 ---
+
+
+
+--- File: ./.git\objects\7c\b09e91cb7ecef4c0c96a10068c40f5294310fc ---
+
+
+
+--- File: ./.git\objects\7e\5a603a4eb2b2b60d164bf4c2da889f33e30be3 ---
+
+
+
+--- File: ./.git\objects\7f\3fef08ee7364837ef82d83de6f1d769ed3f33b ---
+
+
+
+--- File: ./.git\objects\80\eb02713d50c6b32da5ac7bae1db834e4e44205 ---
+
+
+
+--- File: ./.git\objects\81\9b501b62d1910906e3c6316fdd50a88c903a24 ---
+
+
+
+--- File: ./.git\objects\81\b43b971a10532fe853dd477fdc55d60884b265 ---
+
+
+
+--- File: ./.git\objects\83\a24c2cbbea64a3872fd7e39c8bd0a559473c09 ---
+
+
+
+--- File: ./.git\objects\86\71d4dfd707537f453a9d292702d79a6c993e1b ---
+
+
+
+--- File: ./.git\objects\87\d282e1131e6accc1962cec8999b4756306cf17 ---
+
+
+
+--- File: ./.git\objects\88\45a1c72b882b1a28d85f5957bf3e092e52f1cf ---
+
+
+
+--- File: ./.git\objects\89\39201aa29b6ff7b6b84e2ed2b57c39a699b7a7 ---
+
+
+
+--- File: ./.git\objects\8a\6f47603d0f80dfd87c66a1710a9e64d3a3f5d8 ---
+
+
+
+--- File: ./.git\objects\8b\17975b3fdf4487a4158b1c644d2c97db0d8af8 ---
+
+
+
+--- File: ./.git\objects\8d\ebef6512534de5cd5abd92a11533edf0a2bea6 ---
+
+
+
+--- File: ./.git\objects\8e\d5e9104111e15f7e8c193819cdd4783eab73e1 ---
+
+
+
+--- File: ./.git\objects\8e\e929d0a7ef56291bbbc575124a0814d762a29c ---
+
+
+
+--- File: ./.git\objects\8f\00991eb9548bd08bb42fc3655d373fd5c0e562 ---
+
+
+
+--- File: ./.git\objects\93\712d5b3998bbf23e04f9cf65111ab3b421863a ---
+
+
+
+--- File: ./.git\objects\94\6b967950a56ad69dea51155077f9c9d5687882 ---
+
+
+
+--- File: ./.git\objects\95\df5e46d57b517c38d5e90032157c0defb943e0 ---
+
+
+
+--- File: ./.git\objects\98\958da9874d3a0f0a8d75c83a6981faaa0f6858 ---
+
+
+
+--- File: ./.git\objects\99\82561c3351dcbf4ac8d7fa017c97b51b5a85c2 ---
+
+
+
+--- File: ./.git\objects\99\ca36f21aec0da4264517baef278e461e780ac3 ---
+
+
+
+--- File: ./.git\objects\9a\8bc6ae7d514bd262b34cf1f45d325ad75e66fb ---
+
+
+
+--- File: ./.git\objects\9b\3552670004731384079ad127b2c2f64bb5ed84 ---
+
+
+
+--- File: ./.git\objects\9b\d9ca6425afc358e2dfddfca483d42805dc621f ---
+
+
+
+--- File: ./.git\objects\9e\a8f73a338358a31ee037013823a2cbee269ac4 ---
+
+
+
+--- File: ./.git\objects\9f\0a5752552b7773b2d63fdfdb6f31dc8b9f6363 ---
+
+
+
+--- File: ./.git\objects\9f\792811d8054bc4eea2614de7c0c5dfbb0ecd9c ---
+
+
+
+--- File: ./.git\objects\a0\02b29a65f3fa40fecfbf8c9dc16b3dd571ed2c ---
+
+
+
+--- File: ./.git\objects\a0\b33282b479151e590e30395fb2761ab239442c ---
+
+
+
+--- File: ./.git\objects\a0\da4bb8875624bf8d99572a187ab22febb29d82 ---
+
+
+
+--- File: ./.git\objects\a1\c171e9340f7b5ae5ecbbc64b314459470f0a10 ---
+
+
+
+--- File: ./.git\objects\a2\02118dea176c4f23ca36718673540b5454c462 ---
+
+
+
+--- File: ./.git\objects\a3\2183f76f581141615d693f97931c7c26d58492 ---
+
+
+
+--- File: ./.git\objects\a3\21881c5d1a96bd2f0a2aa249eebab17e1c11e2 ---
+
+
+
+--- File: ./.git\objects\a4\4cf3034b182fd0637ddb8f85b349c0b70027b2 ---
+
+
+
+--- File: ./.git\objects\a5\c56795183ad2327e236ac495320a21295f6880 ---
+
+
+
+--- File: ./.git\objects\a6\0bf0c219d83f878713db09ed257c44b56e80e2 ---
+
+
+
+--- File: ./.git\objects\a6\5f15b2961a91ee71b8ce7973c56e7247f44c77 ---
+
+
+
+--- File: ./.git\objects\a9\9cdfd6e1a44edb84abaa9e080247cb3f40a591 ---
+
+
+
+--- File: ./.git\objects\aa\1c56a1988f689d77e696aa0bbbdaa5f643087e ---
+
+
+
+--- File: ./.git\objects\aa\d82e788e867aa62f3437b619a2e4a4344cbb3f ---
+
+
+
+--- File: ./.git\objects\ab\b15596673f89236e455b1103892568a22cdcbd ---
+
+
+
+--- File: ./.git\objects\ab\e51f78819e0bde39730253a442f04a4f496145 ---
+
+
+
+--- File: ./.git\objects\ac\1c58ca8acc2c7ed071ac496910bed8f9c7757a ---
+
+
+
+--- File: ./.git\objects\ae\0668703e4478ca0cfa5ce1baf79e96b6aaa8c6 ---
+
+
+
+--- File: ./.git\objects\ae\691e8a1819af6a14aefea56321a20d79b4eaaf ---
+
+
+
+--- File: ./.git\objects\af\94748e1b99a659f7d22b72f7d40bfedf01649f ---
+
+
+
+--- File: ./.git\objects\b0\5369b7620f6bd490ca4e349e8636c79fdb021d ---
+
+
+
+--- File: ./.git\objects\b1\e8c57aeedba00d4dbf89cf21fab96b1c77f5f3 ---
+
+
+
+--- File: ./.git\objects\b2\5e46c8c26dc3c58e080308b8ff707e498d1a97 ---
+
+
+
+--- File: ./.git\objects\b4\735cb64a252c96b614b460700c00a300e29dc4 ---
+
+
+
+--- File: ./.git\objects\b8\cd3cc64eaf8905af609efd8b2900d157f3160e ---
+
+
+
+--- File: ./.git\objects\b9\9e794d2dc69515181b8f2a527f2e672d12b0ea ---
+
+
+
+--- File: ./.git\objects\bb\7a2c801ed7be9665961948a5304a39c89da59a ---
+
+
+
+--- File: ./.git\objects\bb\fc599e344b0bc8e5e370db4636dc86e895bd05 ---
+
+
+
+--- File: ./.git\objects\bc\938f19e3a8f01055f815f8f8848827fbbb1798 ---
+
+
+
+--- File: ./.git\objects\be\32b5e12393bcb640963b610a6496f0394c61c5 ---
+
+
+
+--- File: ./.git\objects\be\f65d68143aa471dc71e54e56f6f20192187c88 ---
+
+
+
+--- File: ./.git\objects\bf\6e61baee0af7846c61d3997f8eed4f9446c67c ---
+
+
+
+--- File: ./.git\objects\bf\b77d6b29a14687e9554918a3022ea097a4b670 ---
+
+
+
+--- File: ./.git\objects\c1\0d82fa95f15b537e82daa2d27b988342dbb2c0 ---
+
+
+
+--- File: ./.git\objects\c2\30ba60d9909c728ff7d6effedbb22c690916c0 ---
+
+
+
+--- File: ./.git\objects\c2\bc88142239671d929dc50247928e21e97de1f5 ---
+
+
+
+--- File: ./.git\objects\c4\516b62452c0e61100f02f58349efd1f843f050 ---
+
+
+
+--- File: ./.git\objects\c7\5714533d1174118fa236696a578a7d12143bcd ---
+
+
+
+--- File: ./.git\objects\c8\15181d2cd0c1f5df1e80ae8c6ccaa5185854a0 ---
+
+
+
+--- File: ./.git\objects\c9\7691f8df04fb9da9b351c7b1f76a0d9f49c675 ---
+
+
+
+--- File: ./.git\objects\cb\9d3df7a9789606f6faf26207bab051cd18fe09 ---
+
+
+
+--- File: ./.git\objects\cb\c8ea39cee63eef25e6c74d66b008d6a247d681 ---
+
+
+
+--- File: ./.git\objects\cd\338872619ab4eff25efe37e594d2b9a58a3146 ---
+
+
+
+--- File: ./.git\objects\cd\ff487c1e0abd028c15f6429c810dad089311e4 ---
+
+
+
+--- File: ./.git\objects\ce\e0c0e1a7a8caddbe1c6081cab094a4e43dd26b ---
+
+
+
+--- File: ./.git\objects\d0\61915d44744bd2a967e8f1c2b45a894f0e3fc8 ---
+
+
+
+--- File: ./.git\objects\d1\ca1c7cc5e571ecc7308007c9c38cc5b5b94796 ---
+
+
+
+--- File: ./.git\objects\d1\eb88cc926ac6a3bacbefc985370932e7ccac11 ---
+
+
+
+--- File: ./.git\objects\d2\62f81dc179ee80bfa1e05ceb383c2585136646 ---
+
+
+
+--- File: ./.git\objects\d6\233efd4a2e481bed7fa1d83e6bad1eb63832ba ---
+
+
+
+--- File: ./.git\objects\d6\8ab8db1cf6cef0334c3585b0e433482b0eb09b ---
+
+
+
+--- File: ./.git\objects\d7\a84aebfa9f7c02c150ec256268cd233a13cfdc ---
+
+
+
+--- File: ./.git\objects\d8\92efa00c912089fbf6b7e7253afcd61c40053a ---
+
+
+
+--- File: ./.git\objects\db\1513a9eeeae44289b0d0406e89f64394599608 ---
+
+
+
+--- File: ./.git\objects\dc\fc818e49b74e9171fe5f0158a854ef37f95fc9 ---
+
+
+
+--- File: ./.git\objects\dd\4e67ed413de7a0a114ac2ad00718065a7ba598 ---
+
+
+
+--- File: ./.git\objects\dd\6f32aa4266ede4135fabd5b8f5110ba29cbc80 ---
+
+
+
+--- File: ./.git\objects\de\63119ab147906f5d2674b65c957f834d6d09d0 ---
+
+
+
+--- File: ./.git\objects\de\760a4489254064d6377754f5c55b15b1bd618a ---
+
+
+
+--- File: ./.git\objects\de\bde0928f20ae8b57cfd9d98c9e70ced4459eb8 ---
+
+
+
+--- File: ./.git\objects\df\e0770424b2a19faf507a501ebfc23be8f54e7b ---
+
+
+
+--- File: ./.git\objects\e0\61ae5743c486527e3880e54556f03a60b07200 ---
+
+
+
+--- File: ./.git\objects\e1\3a5f407b3edbec45b185a8c38012835fffa52a ---
+
+
+
+--- File: ./.git\objects\e2\895225c13da835349a27df2a9b0ac82890abd0 ---
+
+
+
+--- File: ./.git\objects\e2\b50dc6bd2071ee813f3cfa468e2060d0bea5d1 ---
+
+
+
+--- File: ./.git\objects\e2\b9b0ad53dec5902326d01dea259a4b82d20580 ---
+
+
+
+--- File: ./.git\objects\e3\bba18dd0b5536a5908a55a23c9748a3142968a ---
+
+
+
+--- File: ./.git\objects\e6\9de29bb2d1d6434b8b29ae775ad8c2e48c5391 ---
+
+
+
+--- File: ./.git\objects\e7\a980e5ccaf860d9cb0dc1c69fca5fd10dcd9fe ---
+
+
+
+--- File: ./.git\objects\e9\51f07d01ed7a0dcce135b858840a8dd26517d9 ---
+
+
+
+--- File: ./.git\objects\ec\a1de003ef205851bd0c869c9cb85824e180940 ---
+
+
+
+--- File: ./.git\objects\ee\800a27f3effd5d75ce19c3a888d00710f37e2d ---
+
+
+
+--- File: ./.git\objects\ee\95e3541c13f6e7761cbda71b93ddf0da3790d7 ---
+
+
+
+--- File: ./.git\objects\f1\a49f92eae9315c66e3cdd2da6a0c15321099a6 ---
+
+
+
+--- File: ./.git\objects\f2\f6c27e30c6c7b220792ed9e323fed80adbdefb ---
+
+
+
+--- File: ./.git\objects\f3\0c2fdaabf94ca09cbbe982d549813f0cdbcd23 ---
+
+
+
+--- File: ./.git\objects\f4\a078b6aaf48c6f5e843add1d460099001a798d ---
+
+
+
+--- File: ./.git\objects\f4\c03658351dcab8c267fb6cfd85c009e24498f0 ---
+
+
+
+--- File: ./.git\objects\f5\404c1757df82c07103a908641f44ccb76c8c61 ---
+
+
+
+--- File: ./.git\objects\f5\fc4ed03652668746c8ddce57e581d7af7aaad9 ---
+
+
+
+--- File: ./.git\objects\f6\130f097a25d4471ef44d96a2ffa070d4adff1c ---
+
+
+
+--- File: ./.git\objects\f7\ee725174295b15781ab31e2fe9410c7003261d ---
+
+
+
+--- File: ./.git\objects\fa\a1c9739a9dde7eef0b0a791db2909bbb3807dc ---
+
+
+
+--- File: ./.git\objects\fa\b30d330504f9aaf6dbfcd1af03d5772550e2ad ---
+
+
+
+--- File: ./.git\objects\fb\3f9990c941310a01c8c27d5d09a09bcf9934f7 ---
+
+
+
+--- File: ./.git\objects\fc\32bc7ac062843162e8d84e43a186f6d473f36b ---
+
+
+
+--- File: ./.git\objects\fc\b050727520e1b02ea6f89a0b4d2d217503ff7c ---
+
+
+
+--- File: ./.git\objects\fd\50a11da9f673513ef8e9f829acce69f01c9bcf ---
+
+
+
+--- File: ./.git\objects\fd\7238394220f759e8afb5f4e5df757ef0a0604e ---
+
+
+
+--- File: ./.git\objects\fd\9d7a6f4f3e3df7d05c959a6bf091c212189b2c ---
+
+
+
+--- File: ./.git\objects\fd\b7f0211f29332b756157d19ce84e7f1bfca3cc ---
+
+
+
+--- File: ./.git\objects\fe\2c90021941cb4efee1b0231abdbce29999c854 ---
+
+
+
+--- File: ./.git\objects\ff\de343ddfe9028464ce4d27cb10c47450c9f788 ---
+
+
+
+--- File: ./.git\objects\ff\ff53e8c452e08e5daf74853a9809755ec9f134 ---
+
+
+
+--- File: ./.git\refs\heads\main ---
+
+3480383f2be4ee7f8e5896bc0c982d26b3b564f7
+
+
+--- File: ./.git\refs\remotes\origin\HEAD ---
+
+ref: refs/remotes/origin/main
+
+
+--- File: ./.git\refs\remotes\origin\main ---
+
+3480383f2be4ee7f8e5896bc0c982d26b3b564f7
+
+
+--- File: ./app\__init__.py ---
+
+
+
+--- File: ./app\api\v1\endpoints\auth.py ---
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.security import create_access_token, verify_password, get_password_hash
+from app.db.repositories.user import get_user_by_email, create_user
+from app.schemas.user import UserCreate, UserRead, Token
+from app.db.session import get_db
+
+router = APIRouter()
+
+@router.post("/register", response_model=UserRead)
+async def register(user: UserCreate, db: AsyncSession = Depends(get_db)):
+    existing_user = await get_user_by_email(db, user.email)
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    hashed_password = get_password_hash(user.password)
+    new_user = await create_user(db, {
+        "email": user.email,
+        "hashed_password": hashed_password,
+        "name": user.name,
+        "surname": user.surname,
+        "phone": user.phone
+    })
+    return new_user
+
+@router.post("/login", response_model=Token)
+async def login(email: str, password: str, db: AsyncSession = Depends(get_db)):
+    user = await get_user_by_email(db, email)
+    if not user or not verify_password(password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token({"sub": user.email})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+--- File: ./app\api\v1\endpoints\file.py ---
+
+import re
+import subprocess
+import tempfile
+from PyPDF2 import PdfReader
+from fastapi import APIRouter, Depends, UploadFile, HTTPException, status, File as FastAPIFile
+from fastapi.responses import FileResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import text
+from app.db.models.file import File
+from app.db.session import get_db
+from app.schemas.file import FileUploadResponse
+from app.core.security import decode_access_token
+import os
+from pathlib import Path
+from datetime import datetime
+
+router = APIRouter()
+UPLOAD_DIR = Path("./uploads")  # Директория для хранения файлов
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+MAX_USER_STORAGE_MB = 100
+ALLOWED_EXTENSIONS = {".docx", ".doc", ".pdf"}
+MAX_FILE_SIZE_MB = 10  # Максимальный размер файла в мегабайтах
+
+def sanitize_filename(filename: str) -> str:
+    """
+    Убираем недопустимые символы из имени файла.
+    """
+    return re.sub(r'[<>:"/\\|?*]', '_', filename)
+
+def format_size(size_in_bytes):
+    """Преобразует размер из байт в килобайты или мегабайты."""
+    if size_in_bytes >= 1024 * 1024:
+        return f"{round(size_in_bytes / (1024 * 1024), 2)} MB"
+    else:
+        return f"{round(size_in_bytes / 1024, 2)} KB"
+
+def convert_to_pdf_and_count_pages(input_file: str, output_dir: str) -> tuple[str, int | None]:
+    """Конвертирует файл в PDF с помощью LibreOffice и подсчитывает количество страниц."""
+    try:
+        input_path = Path(input_file)
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # Если файл уже PDF, возвращаем его путь и подсчитываем страницы
+        if input_path.suffix.lower() == ".pdf":
+            pdf_file = input_file
+        else:
+            subprocess.run(
+                [
+                    "libreoffice",
+                    "--headless",
+                    "--convert-to",
+                    "pdf",
+                    input_file,
+                    "--outdir",
+                    str(output_path)
+                ],
+                check=True
+            )
+            pdf_file = str(output_path / f"{input_path.stem}.pdf")
+
+        # Подсчёт страниц с помощью pdfinfo
+        page_info = subprocess.check_output(["pdfinfo", pdf_file]).decode()
+        pages = int([line.split(":")[1].strip() for line in page_info.splitlines() if "Pages" in line][0])
+
+        return pdf_file if input_path.suffix.lower() != ".pdf" else None, pages
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to convert {input_file} to PDF: {e}")
+    except Exception as e:
+        raise RuntimeError(f"Error counting pages: {e}")
+
+@router.post("/upload", response_model=FileUploadResponse)
+async def upload_file(
+    file: UploadFile = FastAPIFile(...),
+    token: str = Depends(decode_access_token),
+    db: AsyncSession = Depends(get_db)
+):
+    user_email = token.get("sub")
+    if not user_email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    user_query = await db.execute(text("SELECT id FROM users WHERE email = :email"), {"email": user_email})
+    user_id = user_query.scalar_one_or_none()
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    _, ext = os.path.splitext(file.filename)
+    ext = ext.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported file format")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    query = text("SELECT COALESCE(SUM(size), 0) FROM files WHERE user_id = :user_id")
+    user_files = await db.execute(query, {"user_id": user_id})
+    total_size = user_files.scalar_one_or_none() or 0
+
+    file_size = os.path.getsize(tmp_path)
+
+    if (total_size + file_size) > MAX_USER_STORAGE_MB * 1024 * 1024:
+        os.remove(tmp_path)
+        raise HTTPException(status_code=400, detail="Storage limit exceeded")
+
+    user_upload_dir = UPLOAD_DIR / sanitize_filename(user_email)
+    user_upload_dir.mkdir(exist_ok=True)
+
+    timestamp = datetime.utcnow().isoformat().replace(":", "-")
+    safe_filename = sanitize_filename(file.filename)
+    filename = f"{timestamp}_{safe_filename}"
+    filepath = user_upload_dir / filename
+
+    os.rename(tmp_path, filepath)
+
+    # Конвертируем в PDF и подсчитываем страницы
+    try:
+        temp_pdf_path, pages_count = convert_to_pdf_and_count_pages(str(filepath), str(user_upload_dir))
+    except Exception as e:
+        os.remove(filepath)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    new_file = File(
+        user_id=user_id,
+        original_filename=file.filename,
+        filename=safe_filename,
+        filepath=str(filepath),
+        temp_pdf_path=temp_pdf_path,
+        size=file_size,
+        uploaded_at=datetime.utcnow(),
+        pages_count=pages_count
+    )
+    db.add(new_file)
+    await db.commit()
+    await db.refresh(new_file)
+
+    return FileUploadResponse(
+        id=new_file.id,
+        filename=new_file.filename,
+        size=file_size,
+        pages=pages_count
+    )
+
+@router.get("/files", response_model=dict)
+async def list_files(
+    token: str = Depends(decode_access_token),
+    db: AsyncSession = Depends(get_db)
+):
+    user_email = token.get("sub")
+    if not user_email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    query_user_id = text("SELECT id FROM users WHERE email = :email")
+    result_user_id = await db.execute(query_user_id, {"email": user_email})
+    user_id = result_user_id.scalar_one_or_none()
+
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    query_files = text("SELECT * FROM files WHERE user_id = :user_id")
+    result_files = await db.execute(query_files, {"user_id": user_id})
+    files = [
+        {
+            **dict(row),
+            "size": format_size(row["size"])
+        }
+        for row in result_files.mappings()
+    ]
+
+    query_storage = text(
+        "SELECT COALESCE(SUM(size), 0) FROM files WHERE user_id = :user_id")
+    result_storage = await db.execute(query_storage, {"user_id": user_id})
+    used_storage = result_storage.scalar_one_or_none() or 0
+    remaining_storage_mb = round(
+        (MAX_USER_STORAGE_MB * 1024 * 1024 - used_storage) / (1024 * 1024), 2)
+
+    return {
+        "files": files,
+        "remaining_storage_mb": remaining_storage_mb
+    }
+
+@router.delete("/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_file(
+    file_id: int,
+    token: str = Depends(decode_access_token),
+    db: AsyncSession = Depends(get_db)
+):
+    user_email = token.get("sub")
+    if not user_email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        )
+
+    query_user_id = text("SELECT id FROM users WHERE email = :email")
+    result_user_id = await db.execute(query_user_id, {"email": user_email})
+    user_id = result_user_id.scalar_one_or_none()
+
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    query = text(
+        "SELECT * FROM files WHERE id = :file_id AND user_id = :user_id")
+    result = await db.execute(query, {"file_id": file_id, "user_id": user_id})
+    file = result.fetchone()
+
+    if not file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File with ID {file_id} not found or does not belong to the user"
+        )
+
+    filepath = Path(file.filepath)
+    if filepath.exists():
+        filepath.unlink()
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File with ID {file_id} not found on the disk"
+        )
+
+    delete_query = text("DELETE FROM files WHERE id = :file_id")
+    await db.execute(delete_query, {"file_id": file_id})
+    await db.commit()
+
+@router.patch("/files/{file_id}", status_code=status.HTTP_200_OK)
+async def rename_file(
+    file_id: int,
+    new_name: str,
+    token: str = Depends(decode_access_token),
+    db: AsyncSession = Depends(get_db)
+):
+    user_email = token.get("sub")
+    if not user_email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        )
+
+    query_user_id = text("SELECT id FROM users WHERE email = :email")
+    result_user_id = await db.execute(query_user_id, {"email": user_email})
+    user_id = result_user_id.scalar_one_or_none()
+
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    query = text("SELECT * FROM files WHERE id = :file_id AND user_id = :user_id")
+    result = await db.execute(query, {"file_id": file_id, "user_id": user_id})
+    file = result.fetchone()
+
+    if not file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File with ID {file_id} not found or does not belong to the user"
+        )
+
+    new_filename = f"{new_name}{Path(file.filename).suffix}"
+    update_query = text("UPDATE files SET filename = :new_filename WHERE id = :file_id")
+    await db.execute(update_query, {"new_filename": new_filename, "file_id": file_id})
+    await db.commit()
+
+    return {"message": f"File renamed to {new_filename}"}
+
+@router.get("/files/download/{file_id}")
+async def download_file(
+    file_id: int,
+    token: str = Depends(decode_access_token),
+    db: AsyncSession = Depends(get_db)
+):
+    user_email = token.get("sub")
+    if not user_email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        )
+
+    query_user_id = text("SELECT id FROM users WHERE email = :email")
+    result_user_id = await db.execute(query_user_id, {"email": user_email})
+    user_id = result_user_id.scalar_one_or_none()
+
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    query = text("SELECT * FROM files WHERE id = :file_id AND user_id = :user_id")
+    result = await db.execute(query, {"file_id": file_id, "user_id": user_id})
+    file = result.fetchone()
+
+    if not file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File with ID {file_id} not found or does not belong to the user"
+        )
+
+    filepath = Path(file.filepath)
+    if not filepath.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found on the server"
+        )
+
+    return FileResponse(
+        path=str(filepath),
+        filename=file.filename,
+        media_type="application/octet-stream"
+    )
+
+
+--- File: ./app\api\v1\endpoints\order.py ---
+
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import text
+from app.db.models.order import Order, OrderFile
+from app.db.session import get_db
+from app.core.config import settings
+from app.core.security import decode_access_token
+from typing import List
+
+router = APIRouter()
+
+price_per_page = settings.PRICE_PER_PAGE
+
+@router.post("/orders")
+async def create_order(
+    file_ids: list[int],
+    copies: list[int],
+    duplex: bool = False,
+    token: dict = Depends(decode_access_token),
+    db: AsyncSession = Depends(get_db)
+):
+    user_email = token.get("sub")
+    if not user_email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    # Получение ID пользователя
+    query_user_id = text("SELECT id FROM users WHERE email = :email")
+    result_user_id = await db.execute(query_user_id, {"email": user_email})
+    user_id = result_user_id.scalar_one_or_none()
+
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Проверяем, что файлы принадлежат пользователю
+    query = text("SELECT id, pages_count FROM files WHERE id = ANY(:file_ids) AND user_id = :user_id")
+    result = await db.execute(query, {"file_ids": file_ids, "user_id": user_id})
+    user_files = result.fetchall()
+
+    if len(user_files) != len(file_ids):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Some files do not belong to the user")
+
+    # Рассчитываем цену на основе количества страниц из базы данных
+    total_price = 0
+    files_with_pages = []
+    for idx, file in enumerate(user_files):
+        file_data = {"file_id": file.id, "pages_count": file.pages_count, "copies": copies[idx]}
+        files_with_pages.append(file_data)
+        total_price += file.pages_count * copies[idx] * price_per_page
+
+    if duplex:
+        total_price = int(total_price * 0.8)  # Скидка 20% за двустороннюю печать
+
+    # Создаём заказ
+    new_order = Order(
+        user_id=user_id,
+        created_at=datetime.utcnow(),
+        status="created",
+        total_price=total_price,
+        duplex=duplex
+    )
+    db.add(new_order)
+    await db.commit()
+    await db.refresh(new_order)
+
+    # Связываем файлы с заказом
+    for file_data in files_with_pages:
+        order_file = OrderFile(
+            order_id=new_order.id,
+            file_id=file_data["file_id"],
+            copies=file_data["copies"]
+        )
+        db.add(order_file)
+    await db.commit()
+
+    return {
+        "order_id": new_order.id,
+        "status": new_order.status,
+        "total_price": total_price,
+        "files": files_with_pages
+    }
+
+
+@router.get("/orders")
+async def list_orders(
+    token: dict = Depends(decode_access_token),
+    db: AsyncSession = Depends(get_db)
+):
+    user_email = token.get("sub")
+    if not user_email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    # Получаем ID пользователя
+    query_user_id = text("SELECT id FROM users WHERE email = :email")
+    result_user_id = await db.execute(query_user_id, {"email": user_email})
+    user_id = result_user_id.scalar_one_or_none()
+
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Получаем список заказов
+    query_orders = text("SELECT * FROM orders WHERE user_id = :user_id ORDER BY created_at DESC")
+    result_orders = await db.execute(query_orders, {"user_id": user_id})
+    orders = result_orders.mappings().all()  # Преобразуем в список словарей
+
+    return {"orders": orders}
+
+
+
+@router.get("/orders/{order_id}")
+async def get_order(
+    order_id: int,
+    token: dict = Depends(decode_access_token),
+    db: AsyncSession = Depends(get_db)
+):
+    user_email = token.get("sub")
+    if not user_email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    # Получаем ID пользователя
+    query_user_id = text("SELECT id FROM users WHERE email = :email")
+    result_user_id = await db.execute(query_user_id, {"email": user_email})
+    user_id = result_user_id.scalar_one_or_none()
+
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Получаем информацию о заказе
+    query_order = text("SELECT * FROM orders WHERE id = :order_id AND user_id = :user_id")
+    result_order = await db.execute(query_order, {"order_id": order_id, "user_id": user_id})
+    order = result_order.mappings().first()
+
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    # Преобразуем RowMapping в словарь
+    order = dict(order)
+
+    # Получаем информацию о файлах, связанных с заказом
+    query_files = text("""
+        SELECT 
+            f.id AS file_id,
+            f.original_filename,
+            f.pages_count,
+            of.copies
+        FROM order_files of
+        JOIN files f ON of.file_id = f.id
+        WHERE of.order_id = :order_id
+    """)
+    result_files = await db.execute(query_files, {"order_id": order_id})
+    files = result_files.mappings().all()
+
+    # Добавляем информацию о файлах к заказу
+    order["files"] = files
+
+    return order
+
+
+@router.delete("/orders/{order_id}")
+async def delete_order(
+    order_id: int,
+    token: dict = Depends(decode_access_token),
+    db: AsyncSession = Depends(get_db)
+):
+    user_email = token.get("sub")
+    if not user_email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    # Получаем ID пользователя
+    query_user_id = text("SELECT id FROM users WHERE email = :email")
+    result_user_id = await db.execute(query_user_id, {"email": user_email})
+    user_id = result_user_id.scalar_one_or_none()
+
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Удаляем связанные записи из order_files
+    query_delete_files = text("DELETE FROM order_files WHERE order_id = :order_id")
+    await db.execute(query_delete_files, {"order_id": order_id})
+
+    # Удаляем заказ
+    query_delete_order = text("DELETE FROM orders WHERE id = :order_id AND user_id = :user_id RETURNING id")
+    result_delete_order = await db.execute(query_delete_order, {"order_id": order_id, "user_id": user_id})
+    deleted_order = result_delete_order.fetchone()
+
+    if not deleted_order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found or already deleted")
+
+    await db.commit()
+    return {"message": f"Order {order_id} deleted successfully"}
+
+
+--- File: ./app\api\v1\endpoints\payment.py ---
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import text
+from datetime import datetime
+from app.db.session import get_db
+from app.core.security import decode_access_token  # Импорт функции для проверки токена
+
+router = APIRouter()
+
+@router.post("/pay/{order_id}")
+async def process_payment(
+    order_id: int,
+    token: dict = Depends(decode_access_token),  # Проверка токена
+    db: AsyncSession = Depends(get_db)
+):
+    user_email = token.get("sub")  # Получаем email пользователя из токена
+    if not user_email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    # Получение ID пользователя
+    query_user_id = text("SELECT id FROM users WHERE email = :email")
+    result_user_id = await db.execute(query_user_id, {"email": user_email})
+    user_id = result_user_id.scalar_one_or_none()
+
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Проверяем существование заказа
+    query_order = text("SELECT * FROM orders WHERE id = :order_id AND user_id = :user_id")
+    result_order = await db.execute(query_order, {"order_id": order_id, "user_id": user_id})
+    order = result_order.fetchone()
+
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    if order.status != "created":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Order is not in 'created' status")
+
+    # Обновляем статус на 'paid'
+    query_update = text("UPDATE orders SET status = :status, updated_at = :updated_at WHERE id = :order_id")
+    await db.execute(query_update, {
+        "status": "paid",
+        "updated_at": datetime.utcnow(),
+        "order_id": order_id
+    })
+    await db.commit()
+
+    return {"order_id": order_id, "status": "paid"}
+
+
+--- File: ./app\api\v1\endpoints\print.py ---
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import text
+from datetime import datetime
+from app.db.session import get_db
+from app.core.config import settings
+from app.core.security import decode_access_token
+import subprocess
+from pathlib import Path
+import os
+
+router = APIRouter()
+
+PDF_PRINTER_NAME = settings.PRINTER_NAME
+
+@router.post("/print/{order_id}")
+async def send_to_virtual_printer(
+    order_id: int,
+    token: dict = Depends(decode_access_token),  # Авторизация через токен
+    db: AsyncSession = Depends(get_db)
+):
+    # Проверка авторизации
+    user_email = token.get("sub")
+    if not user_email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    # Получаем ID пользователя
+    query_user_id = text("SELECT id FROM users WHERE email = :email")
+    result_user_id = await db.execute(query_user_id, {"email": user_email})
+    user_id = result_user_id.scalar_one_or_none()
+
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Проверяем заказ
+    query_order = text("SELECT * FROM orders WHERE id = :order_id AND user_id = :user_id")
+    result_order = await db.execute(query_order, {"order_id": order_id, "user_id": user_id})
+    order = result_order.fetchone()
+
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    if order.status != "paid":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Order is not in 'paid' status")
+
+    # Получаем временные PDF-файлы заказа
+    query_files = text("SELECT f.temp_pdf_path FROM order_files of JOIN files f ON of.file_id = f.id WHERE of.order_id = :order_id")
+    result_files = await db.execute(query_files, {"order_id": order_id})
+    files = result_files.fetchall()
+
+    if not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files associated with this order")
+
+    # Печать файлов на виртуальный принтер
+    for file in files:
+        temp_pdf_path = file.temp_pdf_path
+        if not temp_pdf_path or not Path(temp_pdf_path).exists():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Temporary PDF file {temp_pdf_path} does not exist")
+
+        try:
+            # Отправляем PDF-файл на принтер
+            subprocess.run(["lp", "-d", PDF_PRINTER_NAME, temp_pdf_path], check=True)
+            print(f"Файл {temp_pdf_path} отправлен на принтер {PDF_PRINTER_NAME}")
+            
+            # Удаляем временный файл после успешной печати
+            os.remove(temp_pdf_path)
+            print(f"Временный файл {temp_pdf_path} удалён")
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Ошибка печати файла {temp_pdf_path}: {e}")
+
+    # Обновляем статус заказа
+    query_update = text("UPDATE orders SET status = :status, updated_at = :updated_at WHERE id = :order_id")
+    await db.execute(query_update, {
+        "status": "closed",
+        "updated_at": datetime.utcnow(),
+        "order_id": order_id
+    })
+    await db.commit()
+
+    return {"order_id": order_id, "status": "closed", "message": "Files sent to virtual printer and temporary files deleted"}
+
+
+--- File: ./app\api\v1\endpoints\__pycache__\auth.cpython-310.pyc ---
+
+
+
+--- File: ./app\api\v1\endpoints\__pycache__\auth.cpython-311.pyc ---
+
+
+
+--- File: ./app\api\v1\endpoints\__pycache__\file.cpython-310.pyc ---
+
+
+
+--- File: ./app\api\v1\endpoints\__pycache__\file.cpython-311.pyc ---
+
+
+
+--- File: ./app\api\v1\endpoints\__pycache__\order.cpython-310.pyc ---
+
+
+
+--- File: ./app\api\v1\endpoints\__pycache__\order.cpython-311.pyc ---
+
+
+
+--- File: ./app\api\v1\endpoints\__pycache__\payment.cpython-310.pyc ---
+
+
+
+--- File: ./app\api\v1\endpoints\__pycache__\payment.cpython-311.pyc ---
+
+
+
+--- File: ./app\api\v1\endpoints\__pycache__\print.cpython-310.pyc ---
+
+
+
+--- File: ./app\api\v1\endpoints\__pycache__\print.cpython-311.pyc ---
+
+
+
+--- File: ./app\core\config.py ---
+
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    PROJECT_NAME: str
+    API_V1_STR: str
+    DATABASE_URL: str
+    SECRET_KEY: str
+    ALGORITHM: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int
+    PRICE_PER_PAGE: int
+    PRINTER_NAME: str
+
+    class Config:
+        from_attributes = True
+        env_file = ".env"
+
+settings = Settings()
+
+
+--- File: ./app\core\security.py ---
+
+from datetime import datetime, timedelta
+from fastapi import HTTPException, status
+from jose import jwt, JWTError
+from passlib.context import CryptContext
+from app.core.config import settings
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+def decode_access_token(token: str):
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired. Please log in again."
+        )
+    except jwt.JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token. Please log in again."
+        )
+
+--- File: ./app\core\__init__.py ---
+
+
+
+--- File: ./app\core\__pycache__\config.cpython-310.pyc ---
+
+
+
+--- File: ./app\core\__pycache__\config.cpython-311.pyc ---
+
+
+
+--- File: ./app\core\__pycache__\security.cpython-310.pyc ---
+
+
+
+--- File: ./app\core\__pycache__\security.cpython-311.pyc ---
+
+
+
+--- File: ./app\core\__pycache__\__init__.cpython-310.pyc ---
+
+
+
+--- File: ./app\core\__pycache__\__init__.cpython-311.pyc ---
+
+
+
+--- File: ./app\db\session.py ---
+
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+from app.core.config import settings
+
+Base = declarative_base()
+
+# Создаем движок для PostgreSQL
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=True,  # Лог SQL-запросов, можно отключить в продакшене
+)
+
+async_session = sessionmaker(
+    engine,
+    expire_on_commit=False,
+    class_=AsyncSession,
+)
+
+# Генератор для получения сессий
+async def get_db():
+    async with async_session() as session:
+        yield session
+
+
+--- File: ./app\db\__init__.py ---
+
+
+
+--- File: ./app\db\models\device.py ---
+
+from sqlalchemy import Column, String, Boolean
+from app.db.session import Base
+
+class Device(Base):
+    __tablename__ = "devices"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    ip_address = Column(String, nullable=False, unique=True)
+    secret_key = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True)
+
+
+--- File: ./app\db\models\file.py ---
+
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
+from sqlalchemy.orm import relationship
+from app.db.session import Base
+
+class File(Base):
+    __tablename__ = "files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    original_filename = Column(String, nullable=False)  # Оригинальное имя файла
+    filename = Column(String, nullable=False)  # Уникальное имя файла на диске
+    pages_count = Column(Integer, default=0)  # Количество страниц
+    filepath = Column(String, nullable=False)
+    temp_pdf_path = Column(String, nullable=True)
+    size = Column(Integer, nullable=False)
+    uploaded_at = Column(DateTime, nullable=False)
+
+    user = relationship("User", back_populates="files")
+
+
+--- File: ./app\db\models\order.py ---
+
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime
+from sqlalchemy.orm import relationship
+from app.db.session import Base
+from datetime import datetime
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)  # Время создания
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)  # Время обновления
+    status = Column(String, default="pending")  # Статусы: pending, completed, failed
+    total_price = Column(Integer, nullable=False)
+    duplex = Column(Boolean, default=False)  # Двухсторонняя печать
+
+    # Связь с файлами
+    order_files = relationship("OrderFile", back_populates="order")
+
+
+class OrderFile(Base):
+    __tablename__ = "order_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
+    file_id = Column(Integer, ForeignKey("files.id"), nullable=False)
+    copies = Column(Integer, default=1)  # Количество копий
+
+    # Связь с заказами
+    order = relationship("Order", back_populates="order_files")
+
+
+--- File: ./app\db\models\user.py ---
+
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import relationship
+from app.db.session import Base
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    surname = Column(String, nullable=False)
+    phone = Column(String, nullable=True)
+
+    files = relationship("File", back_populates="user")
+
+
+--- File: ./app\db\models\__init__.py ---
+
+
+
+--- File: ./app\db\models\__pycache__\file.cpython-310.pyc ---
+
+
+
+--- File: ./app\db\models\__pycache__\file.cpython-311.pyc ---
+
+
+
+--- File: ./app\db\models\__pycache__\order.cpython-310.pyc ---
+
+
+
+--- File: ./app\db\models\__pycache__\order.cpython-311.pyc ---
+
+
+
+--- File: ./app\db\models\__pycache__\user.cpython-310.pyc ---
+
+
+
+--- File: ./app\db\models\__pycache__\user.cpython-311.pyc ---
+
+
+
+--- File: ./app\db\models\__pycache__\__init__.cpython-310.pyc ---
+
+
+
+--- File: ./app\db\models\__pycache__\__init__.cpython-311.pyc ---
+
+
+
+--- File: ./app\db\repositories\user.py ---
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from app.db.models.user import User
+
+async def get_user_by_email(db: AsyncSession, email: str):
+    result = await db.execute(select(User).filter(User.email == email))
+    return result.scalars().first()
+
+async def create_user(db: AsyncSession, user_data: dict):
+    user = User(**user_data)
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+--- File: ./app\db\repositories\__init__.py ---
+
+
+
+--- File: ./app\db\repositories\__pycache__\user.cpython-310.pyc ---
+
+
+
+--- File: ./app\db\repositories\__pycache__\user.cpython-311.pyc ---
+
+
+
+--- File: ./app\db\repositories\__pycache__\__init__.cpython-310.pyc ---
+
+
+
+--- File: ./app\db\repositories\__pycache__\__init__.cpython-311.pyc ---
+
+
+
+--- File: ./app\db\__pycache__\base.cpython-310.pyc ---
+
+
+
+--- File: ./app\db\__pycache__\session.cpython-310.pyc ---
+
+
+
+--- File: ./app\db\__pycache__\session.cpython-311.pyc ---
+
+
+
+--- File: ./app\db\__pycache__\__init__.cpython-310.pyc ---
+
+
+
+--- File: ./app\db\__pycache__\__init__.cpython-311.pyc ---
+
+
+
+--- File: ./app\schemas\file.py ---
+
+from pydantic import BaseModel
+
+class FileUploadResponse(BaseModel):
+    id: int
+    filename: str
+    size: int
+
+class FileRead(BaseModel):
+    id: int
+    original_filename: str
+    filename: str
+    filepath: str
+    size: int
+    uploaded_at: str
+
+    class Config:
+        orm_mode = True
+
+
+--- File: ./app\schemas\user.py ---
+
+from pydantic import BaseModel, EmailStr
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+    surname: str
+    phone: str
+
+class UserRead(BaseModel):
+    id: int
+    email: EmailStr
+    name: str
+    surname: str
+
+    class Config:
+        orm_mode = True
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+--- File: ./app\schemas\__pycache__\file.cpython-310.pyc ---
+
+
+
+--- File: ./app\schemas\__pycache__\file.cpython-311.pyc ---
+
+
+
+--- File: ./app\schemas\__pycache__\user.cpython-310.pyc ---
+
+
+
+--- File: ./app\schemas\__pycache__\user.cpython-311.pyc ---
+
+
+
+--- File: ./app\tasks\cleanup.py ---
+
+from datetime import datetime, timedelta
+from pathlib import Path
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import text
+from sqlalchemy.future import select
+from app.db.models.file import File
+from app.db.session import get_db
+import logging
+
+# Настраиваем логирование
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("cleanup.log", encoding="utf-8"),
+        # logging.StreamHandler(),            # Лог в консоль
+    ],
+)
+logger = logging.getLogger(__name__)
+
+UPLOAD_DIR = Path("./uploads")
+
+async def cleanup_old_files(db: AsyncSession):
+    one_month_ago = datetime.utcnow() - timedelta(days=30)
+    logger.info("Начало очистки старых файлов. Проверяем файлы старше %s", one_month_ago)
+
+    result = await db.execute(
+        select(File).where(File.uploaded_at < one_month_ago)
+    )
+    old_files = result.scalars().all()
+
+    if not old_files:
+        logger.info("Нет файлов для удаления.")
+        return
+
+    for file in old_files:
+        file_path = Path(file.filepath)
+        try:
+            if file_path.exists():
+                file_path.unlink()
+                logger.info("Файл %s успешно удален.", file_path)
+            else:
+                logger.warning("Файл %s не найден.", file_path)
+
+            await db.delete(file)
+            logger.info("Запись о файле %s удалена из базы данных.", file.filename)
+
+        except Exception as e:
+            logger.error("Ошибка при удалении файла %s: %s", file_path, str(e))
+
+    await db.commit()
+    logger.info("Очистка завершена. Удалено файлов: %d", len(old_files))
+
+--- File: ./app\tasks\__pycache__\cleanup.cpython-310.pyc ---
+
+
+
+--- File: ./app\tasks\__pycache__\cleanup.cpython-311.pyc ---
+

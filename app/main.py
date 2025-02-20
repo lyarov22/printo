@@ -15,13 +15,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title=settings.PROJECT_NAME)
+api_version = settings.API_V1_STR
 
 # Register routers
-app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
-app.include_router(file_router, prefix=f"{settings.API_V1_STR}/files", tags=["files"])
-app.include_router(order_router, prefix=f"{settings.API_V1_STR}/orders", tags=["orders"])
-app.include_router(payment_router, prefix=f"{settings.API_V1_STR}", tags=["payments"])
-app.include_router(print_router, prefix=f"{settings.API_V1_STR}", tags=["print"])
+app.include_router(auth_router, prefix=f"{api_version}/auth", tags=["auth"])
+app.include_router(file_router, prefix=f"{api_version}/files", tags=["files"])
+app.include_router(order_router, prefix=f"{api_version}/orders", tags=["orders"])
+app.include_router(payment_router, prefix=f"{api_version}", tags=["payments"])
+app.include_router(print_router, prefix=f"{api_version}", tags=["print"])
 
 @app.on_event("startup")
 async def startup():

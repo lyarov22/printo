@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi_utils.tasks import repeat_every
 from app.core.config import settings
 from app.api.v1.endpoints.auth import router as auth_router
+from app.api.v1.endpoints.codes import router as codes_router
 from app.api.v1.endpoints.file import router as file_router
 from app.api.v1.endpoints.order import router as order_router
 from app.api.v1.endpoints.payment import router as payment_router
@@ -19,6 +20,7 @@ api_version = settings.API_V1_STR
 
 # Register routers
 app.include_router(auth_router, prefix=f"{api_version}/auth", tags=["auth"])
+app.include_router(codes_router, prefix=f"{api_version}/codes", tags=["codes"])
 app.include_router(file_router, prefix=f"{api_version}/files", tags=["files"])
 app.include_router(order_router, prefix=f"{api_version}/orders", tags=["orders"])
 app.include_router(payment_router, prefix=f"{api_version}", tags=["payments"])

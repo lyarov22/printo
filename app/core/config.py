@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int
     PRICE_PER_PAGE: int
     PRINTER_NAME: str
+    TELEGRAM_API_TOKEN: str
 
     class Config:
         from_attributes = True

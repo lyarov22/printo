@@ -7,6 +7,10 @@ class UserCreate(BaseModel):
     surname: str
     phone: str
 
+class UserAuth(BaseModel):
+    email: str
+    password: str
+
 class UserRead(BaseModel):
     id: int
     email: EmailStr
@@ -19,3 +23,7 @@ class UserRead(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+class TelegramLoginSchema(BaseModel):
+    phone: str
+    code: str
